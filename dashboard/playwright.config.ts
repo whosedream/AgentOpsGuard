@@ -1,4 +1,4 @@
-﻿import { defineConfig } from "@playwright/test";
+import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -9,7 +9,7 @@ export default defineConfig({
     baseURL: "http://127.0.0.1:3100",
   },
   webServer: {
-    command: "npx next dev -p 3100 --hostname 127.0.0.1",
+    command: "npm run dev -- --hostname 127.0.0.1 --port 3100",
     url: "http://127.0.0.1:3100",
     reuseExistingServer: false,
     timeout: 120_000,

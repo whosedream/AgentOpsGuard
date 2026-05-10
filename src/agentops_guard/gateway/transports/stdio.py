@@ -7,10 +7,19 @@ from typing import Any
 
 
 class StdioTransport:
-    def __init__(self, command: str, args: list[str] | None = None, timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        command: str,
+        args: list[str] | None = None,
+        timeout: float = 10.0,
+        max_response_bytes: int = 262_144,
+        max_stderr_bytes: int = 4_096,
+    ) -> None:
         self.command = command
         self.args = args or []
         self.timeout = timeout
+        self.max_response_bytes = max_response_bytes
+        self.max_stderr_bytes = max_stderr_bytes
 
     def list_tools(self) -> list[dict[str, Any]]:
         response = self._request("tools/list", {})
@@ -19,11 +28,17 @@ class StdioTransport:
     def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         response = self._request("tools/call", {"name": tool_name, "arguments": arguments})
         if "error" in response:
-            return {"isError": True, "content": [{"type": "text", "text": str(response["error"])}]}
+            return _transport_error(str(response["error"]), response["error"])
         return response.get("result", {})
 
     def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        manager = StdioProcessManager(self.command, self.args, self.timeout)
+        manager = StdioProcessManager(
+            self.command,
+            self.args,
+            self.timeout,
+            max_response_bytes=self.max_response_bytes,
+            max_stderr_bytes=self.max_stderr_bytes,
+        )
         try:
             return manager.request(method, params)
         finally:
@@ -31,10 +46,20 @@ class StdioTransport:
 
 
 class StdioProcessManager:
-    def __init__(self, command: str, args: list[str] | None = None, timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        command: str,
+        args: list[str] | None = None,
+        timeout: float = 10.0,
+        *,
+        max_response_bytes: int = 262_144,
+        max_stderr_bytes: int = 4_096,
+    ) -> None:
         self.command = command
         self.args = args or []
         self.timeout = timeout
+        self.max_response_bytes = max_response_bytes
+        self.max_stderr_bytes = max_stderr_bytes
         self._process: subprocess.Popen[bytes] | None = None
         self._request_id = 0
         self._lock = Lock()
@@ -50,8 +75,8 @@ class StdioProcessManager:
                 assert process.stdin is not None
                 process.stdin.write(framed)
                 process.stdin.flush()
-                return _read_framed(process, self.timeout)
-            except (BrokenPipeError, OSError, TimeoutError) as exc:
+                return _read_framed(process, self.timeout, self.max_response_bytes, self.max_stderr_bytes)
+            except (BrokenPipeError, OSError, TimeoutError, ValueError) as exc:
                 self.restart()
                 return {"error": {"code": "stdio_error", "message": str(exc)}}
 
@@ -86,12 +111,33 @@ class StdioProcessManager:
 _MANAGERS: dict[str, StdioProcessManager] = {}
 
 
-def get_stdio_manager(server_id: str, command: str, args: list[str] | None = None, timeout: float = 10.0) -> StdioProcessManager:
+def get_stdio_manager(
+    server_id: str,
+    command: str,
+    args: list[str] | None = None,
+    timeout: float = 10.0,
+    *,
+    max_response_bytes: int = 262_144,
+    max_stderr_bytes: int = 4_096,
+) -> StdioProcessManager:
     manager = _MANAGERS.get(server_id)
-    if manager is None or manager.command != command or manager.args != (args or []):
+    if (
+        manager is None
+        or manager.command != command
+        or manager.args != (args or [])
+        or manager.timeout != timeout
+        or manager.max_response_bytes != max_response_bytes
+        or manager.max_stderr_bytes != max_stderr_bytes
+    ):
         if manager is not None:
             manager.close()
-        manager = StdioProcessManager(command, args, timeout)
+        manager = StdioProcessManager(
+            command,
+            args,
+            timeout,
+            max_response_bytes=max_response_bytes,
+            max_stderr_bytes=max_stderr_bytes,
+        )
         _MANAGERS[server_id] = manager
     return manager
 
@@ -110,11 +156,11 @@ def _decode_framed(data: bytes) -> dict[str, Any]:
         return {"error": {"code": "invalid_json", "message": str(exc)}}
 
 
-def _read_framed(process: subprocess.Popen[bytes], timeout: float) -> dict[str, Any]:
+def _read_framed(process: subprocess.Popen[bytes], timeout: float, max_response_bytes: int, max_stderr_bytes: int) -> dict[str, Any]:
     assert process.stdout is not None
-    header = _read_until(process.stdout, b"\r\n\r\n", timeout)
+    header = _read_until(process.stdout, b"\r\n\r\n", timeout, max_response_bytes)
     if not header:
-        stderr = _read_available_stderr(process)
+        stderr = _read_available_stderr(process, max_stderr_bytes)
         return {"error": {"code": "empty_response", "message": stderr or "MCP stdio server returned no data"}}
     length = 0
     for line in header.decode("ascii", errors="ignore").split("\r\n"):
@@ -123,11 +169,13 @@ def _read_framed(process: subprocess.Popen[bytes], timeout: float) -> dict[str, 
             break
     if length <= 0:
         return {"error": {"code": "invalid_frame", "message": "Missing Content-Length"}}
+    if length > max_response_bytes:
+        raise ValueError(f"MCP stdio response exceeds limit: {length} > {max_response_bytes}")
     body = process.stdout.read(length)
     return _decode_framed(body)
 
 
-def _read_until(stream, marker: bytes, timeout: float) -> bytes:
+def _read_until(stream, marker: bytes, timeout: float, max_bytes: int) -> bytes:
     import time
 
     deadline = time.monotonic() + timeout
@@ -139,13 +187,25 @@ def _read_until(stream, marker: bytes, timeout: float) -> bytes:
         if not chunk:
             break
         data += chunk
+        if len(data) > max_bytes:
+            raise ValueError(f"MCP stdio header exceeds limit: {len(data)} > {max_bytes}")
     return data
 
 
-def _read_available_stderr(process: subprocess.Popen[bytes]) -> str:
+def _read_available_stderr(process: subprocess.Popen[bytes], max_stderr_bytes: int) -> str:
     if process.stderr is None or process.poll() is None:
         return ""
     try:
-        return process.stderr.read(500).decode("utf-8", errors="ignore")
+        return process.stderr.read(max_stderr_bytes).decode("utf-8", errors="ignore")
     except Exception:
         return ""
+
+
+def _transport_error(message: str, upstream_error: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "isError": True,
+        "content": [{"type": "text", "text": message}],
+        "policyDecision": None,
+        "risk": None,
+        "upstreamError": upstream_error,
+    }

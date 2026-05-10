@@ -1,14 +1,15 @@
-﻿import base64
+import base64
 import binascii
+import importlib
 import re
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.models import RiskEvent, ScanRule
-from agentops_guard.backend.schemas import EvidenceSpan, ScanRequest, ScanResponse
+from agentops_guard.backend.schemas import ContentIn, EvidenceSpan, ScanRequest, ScanResponse
 from agentops_guard.backend.services.content import new_id, persist_content, redact_text
-from agentops_guard.backend.schemas import ContentIn
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,49 @@ class ScannerRule:
     pattern: re.Pattern[str]
     severity: str
     score: float
+
+
+@dataclass(frozen=True)
+class ScannerFinding:
+    label: str
+    severity: str
+    score: float
+    start: int
+    end: int
+    snippet: str
+
+
+class ScannerProvider:
+    def scan(self, request: ScanRequest, texts: list[tuple[str, int]], db: Session | None = None) -> list[ScannerFinding]:
+        raise NotImplementedError
+
+
+class RegexScannerProvider(ScannerProvider):
+    def __init__(self, rules: list[ScannerRule]) -> None:
+        self.rules = rules
+
+    def scan(self, request: ScanRequest, texts: list[tuple[str, int]], db: Session | None = None) -> list[ScannerFinding]:
+        findings: list[ScannerFinding] = []
+        seen: set[tuple[str, str]] = set()
+        for text, offset_base in texts:
+            for rule in self.rules:
+                for match in rule.pattern.finditer(text):
+                    identity = (rule.label, match.group(0))
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    findings.append(
+                        ScannerFinding(
+                            label=rule.label,
+                            severity=rule.severity,
+                            score=rule.score,
+                            start=match.start() if offset_base >= 0 else 0,
+                            end=match.end() if offset_base >= 0 else min(len(request.content), 80),
+                            snippet=match.group(0)[:160],
+                        )
+                    )
+                    break
+        return findings
 
 
 RULES = [
@@ -61,18 +105,17 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
     for decoded in _decode_base64_candidates(request.content):
         texts.append((decoded, -1))
 
-    for text, offset_base in texts:
-        for rule in _active_rules(request.project_id, db):
-            for match in rule.pattern.finditer(text):
-                if rule.label not in labels:
-                    labels.append(rule.label)
-                severities.append(rule.severity)
-                score = max(score, rule.score)
-                start = match.start() if offset_base >= 0 else 0
-                end = match.end() if offset_base >= 0 else min(len(request.content), 80)
-                snippet = match.group(0)[:160]
-                evidence.append(EvidenceSpan(label=rule.label, start=start, end=end, snippet=snippet))
-                break
+    for provider in _providers(request.project_id, db):
+        try:
+            findings = provider.scan(request, texts, db)
+        except Exception:
+            continue
+        for finding in findings:
+            if finding.label not in labels:
+                labels.append(finding.label)
+            severities.append(finding.severity)
+            score = max(score, finding.score)
+            evidence.append(EvidenceSpan(label=finding.label, start=finding.start, end=finding.end, snippet=finding.snippet))
 
     if any(text for text, offset in texts if offset == -1):
         labels.append("base64_obfuscation")
@@ -126,3 +169,24 @@ def _active_rules(project_id: str, db: Session | None) -> list[ScannerRule]:
             continue
         rules.append(ScannerRule(row.label, pattern, row.severity, row.score))
     return rules
+
+
+def _providers(project_id: str, db: Session | None) -> list[ScannerProvider]:
+    providers: list[ScannerProvider] = [RegexScannerProvider(_active_rules(project_id, db))]
+    for plugin in get_settings().scanner_plugins:
+        provider = _load_plugin(plugin)
+        if provider is not None:
+            providers.append(provider)
+    return providers
+
+
+def _load_plugin(spec: str) -> ScannerProvider | None:
+    if ":" not in spec:
+        return None
+    module_name, factory_name = spec.split(":", 1)
+    module = importlib.import_module(module_name)
+    factory = getattr(module, factory_name)
+    provider = factory()
+    if not isinstance(provider, ScannerProvider):
+        raise TypeError(f"Scanner plugin {spec} did not return a ScannerProvider")
+    return provider

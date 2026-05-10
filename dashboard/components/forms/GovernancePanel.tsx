@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  AuthContext,
   apiGet,
   apiPatch,
   apiPost,
   ApprovalRequest,
+  canManageGovernance,
   ControlPlaneStatus,
   pageItems,
   PolicyPack,
@@ -19,6 +21,7 @@ export function GovernancePanel() {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [packs, setPacks] = useState<PolicyPack[]>([]);
   const [rules, setRules] = useState<ScanRule[]>([]);
+  const [auth, setAuth] = useState<AuthContext | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -31,16 +34,19 @@ export function GovernancePanel() {
     setLoading(true);
     setError(null);
     try {
-      const [control, approvalPage, packPage, rulePage] = await Promise.all([
+      const [authContext, control, approvalPage, packPage, rulePage] = await Promise.all([
+        apiGet<AuthContext>("/v1/auth/context"),
         apiGet<ControlPlaneStatus>(`/v1/control-plane/status?project_id=${encodeURIComponent(targetProject)}`),
         apiGet<ApprovalRequest[] | { items: ApprovalRequest[] }>(`/v1/approvals?project_id=${encodeURIComponent(targetProject)}&status=pending&page_mode=envelope`),
         apiGet<PolicyPack[] | { items: PolicyPack[] }>(`/v1/policy-packs?project_id=${encodeURIComponent(targetProject)}&page_mode=envelope`),
         apiGet<ScanRule[] | { items: ScanRule[] }>(`/v1/scanner/rules?project_id=${encodeURIComponent(targetProject)}&page_mode=envelope`),
       ]);
+      setAuth(authContext);
       setStatus(control);
-      setRetentionDays(String(control.project.retention_days));
-      setStoreRaw(control.project.store_raw_content);
-      setPolicyFailMode(control.project.policy_fail_mode);
+      const system = control;
+      setRetentionDays(String(system.project.retention_days));
+      setStoreRaw(system.project.store_raw_content);
+      setPolicyFailMode(system.project.policy_fail_mode);
       setApprovals(pageItems(approvalPage));
       setPacks(pageItems(packPage));
       setRules(pageItems(rulePage));
@@ -56,6 +62,7 @@ export function GovernancePanel() {
   }, []);
 
   const runStatuses = useMemo(() => Object.entries(status?.run_statuses ?? {}), [status]);
+  const canManage = auth ? canManageGovernance(auth) : false;
 
   async function saveProject() {
     setSaving(true);
@@ -172,7 +179,7 @@ export function GovernancePanel() {
             <input type="checkbox" checked={storeRaw} onChange={(event) => setStoreRaw(event.target.checked)} /> Store raw content for this project
           </label>
           <div className="mt-5 flex gap-3">
-            <button onClick={saveProject} disabled={saving} className="rounded-xl bg-cyan-300 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50">Save config</button>
+            <button onClick={saveProject} disabled={saving || !canManage} className="rounded-xl bg-cyan-300 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50">Save config</button>
             <button onClick={() => load(projectId)} className="rounded-xl border border-white/10 px-4 py-2 text-slate-200">Reload</button>
           </div>
         </div>
@@ -204,8 +211,8 @@ export function GovernancePanel() {
                 <div className="font-semibold text-white">{item.reason_code}</div>
                 <div className="mt-1 text-slate-400">{item.run_id ?? "no run"} · {item.severity}</div>
                 <div className="mt-3 flex gap-2">
-                  <button onClick={() => reviewApproval(item.id, "approved")} className="rounded-lg bg-emerald-300 px-3 py-1 text-slate-950">Approve</button>
-                  <button onClick={() => reviewApproval(item.id, "denied")} className="rounded-lg bg-rose-300 px-3 py-1 text-slate-950">Deny</button>
+                  <button onClick={() => reviewApproval(item.id, "approved")} disabled={!canManage} className="rounded-lg bg-emerald-300 px-3 py-1 text-slate-950 disabled:opacity-50">Approve</button>
+                  <button onClick={() => reviewApproval(item.id, "denied")} disabled={!canManage} className="rounded-lg bg-rose-300 px-3 py-1 text-slate-950 disabled:opacity-50">Deny</button>
                 </div>
               </div>
             )) : <EmptyState label="No pending approvals" />}
@@ -215,7 +222,7 @@ export function GovernancePanel() {
         <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-xl font-bold">Policy Packs</h2>
-            <button onClick={seedPolicyPack} disabled={saving} className="rounded-lg border border-cyan-300/30 px-3 py-1 text-xs text-cyan-100">Seed pack</button>
+            <button onClick={seedPolicyPack} disabled={saving || !canManage} className="rounded-lg border border-cyan-300/30 px-3 py-1 text-xs text-cyan-100 disabled:opacity-50">Seed pack</button>
           </div>
           <div className="mt-4 space-y-3">
             {packs.length ? packs.map((pack) => (
@@ -230,7 +237,7 @@ export function GovernancePanel() {
         <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
           <h2 className="text-xl font-bold">Scan Rules</h2>
           <input value={scanPattern} onChange={(event) => setScanPattern(event.target.value)} className="mt-4 w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-sm" />
-          <button onClick={createScanRule} disabled={saving} className="mt-3 rounded-xl bg-cyan-300 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50">Add rule</button>
+          <button onClick={createScanRule} disabled={saving || !canManage} className="mt-3 rounded-xl bg-cyan-300 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50">Add rule</button>
           <div className="mt-4 space-y-3">
             {rules.length ? rules.map((rule) => (
               <div key={rule.id} className="rounded-2xl bg-slate-950/70 p-4 text-sm">

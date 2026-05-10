@@ -1,0 +1,56 @@
+image:
+  repository: agentops-guard
+  tag: latest
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+replicaCount:
+  api: 1
+  gateway: 1
+  worker: 1
+  dashboard: 1
+
+service:
+  apiPort: 8000
+  gatewayPort: 8001
+  dashboardPort: 3000
+  type: ClusterIP
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: agentops.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  api: {}
+  gateway: {}
+  worker: {}
+  dashboard: {}
+
+probes:
+  api:
+    readinessPath: /readyz
+    livenessPath: /healthz
+  gateway:
+    readinessPath: /mcp/tools/list
+    livenessPath: /mcp/tools/list
+  dashboard:
+    readinessPath: /setup
+    livenessPath: /setup
+
+env:
+  AGENTOPS_ENV: prod
+  AGENTOPS_DATABASE_URL: ""
+  AGENTOPS_REDIS_URL: ""
+  AGENTOPS_API_KEY: ""
+  AGENTOPS_OPERATOR_API_KEY: ""
+  AGENTOPS_SERVER_API_URL: http://agentops-guard-api:8000
+  AGENTOPS_SERVER_GATEWAY_URL: http://agentops-guard-gateway:8001
+
+extraEnv: {}

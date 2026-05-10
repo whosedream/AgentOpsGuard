@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentops-guard-dashboard
+spec:
+  replicas: {{ .Values.replicaCount.dashboard }}
+  selector:
+    matchLabels:
+      app: agentops-guard-dashboard
+  template:
+    metadata:
+      labels:
+        app: agentops-guard-dashboard
+    spec:
+      containers:
+        - name: dashboard
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["npm", "run", "start"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentops-guard.name" . }}-config
+            - secretRef:
+                name: {{ include "agentops-guard.name" . }}-secret
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.dashboard.readinessPath }}
+              port: 3000
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.dashboard.livenessPath }}
+              port: 3000
+          resources:
+            {{- toYaml .Values.resources.dashboard | nindent 12 }}

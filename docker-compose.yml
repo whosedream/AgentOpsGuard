@@ -5,7 +5,8 @@ services:
     environment:
       AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
   api:
     build: .
@@ -17,8 +18,15 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - migration
-      - redis
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   gateway:
     build: .
@@ -30,8 +38,15 @@ services:
     ports:
       - "8001:8001"
     depends_on:
-      - migration
-      - redis
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/mcp/tools/list', timeout=5).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   worker:
     build: .
@@ -41,24 +56,35 @@ services:
       AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
       AGENTOPS_REDIS_URL: redis://redis:6379/0
     depends_on:
-      - migration
-      - redis
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
   dashboard:
     image: node:22-bookworm-slim
     working_dir: /app/dashboard
-    command: sh -c "npm install && npm run dev -- --hostname 0.0.0.0"
+    command: sh -c "npm ci && npm run build && npm start -- --hostname 0.0.0.0"
     environment:
       AGENTOPS_SERVER_API_URL: http://api:8000
       AGENTOPS_SERVER_GATEWAY_URL: http://gateway:8001
       AGENTOPS_SERVER_API_KEY: dev-agentops-key
+      NODE_ENV: production
     volumes:
       - .:/app
+      - dashboard_node_modules:/app/dashboard/node_modules
     ports:
       - "3000:3000"
     depends_on:
-      - api
-      - gateway
+      api:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/setup').then((r)=>{if(!r.ok) process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
 
   postgres:
     image: postgres:16
@@ -70,11 +96,22 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentops -d agentops"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   redis:
     image: redis:7
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
 volumes:
   postgres_data:
+  dashboard_node_modules:

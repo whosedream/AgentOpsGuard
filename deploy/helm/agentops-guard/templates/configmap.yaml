@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentops-guard.name" . }}-config
+  labels:
+    {{- include "agentops-guard.labels" . | nindent 4 }}
+data:
+  AGENTOPS_ENV: {{ .Values.env.AGENTOPS_ENV | quote }}
+  AGENTOPS_SERVER_API_URL: {{ .Values.env.AGENTOPS_SERVER_API_URL | quote }}
+  AGENTOPS_SERVER_GATEWAY_URL: {{ .Values.env.AGENTOPS_SERVER_GATEWAY_URL | quote }}

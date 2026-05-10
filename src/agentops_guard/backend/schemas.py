@@ -289,6 +289,7 @@ class PolicyPackUpdate(BaseModel):
 
 class PolicyPackOut(BaseModel):
     id: str
+    family_id: str
     project_id: str
     name: str
     version: str
@@ -296,6 +297,13 @@ class PolicyPackOut(BaseModel):
     description: str | None
     rules: list[dict[str, Any]]
     created_at: datetime
+
+
+class PolicyPackVersionCreate(BaseModel):
+    version: str
+    status: Literal["active", "disabled"] = "active"
+    description: str | None = None
+    rules: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ScanRuleCreate(BaseModel):
@@ -513,6 +521,14 @@ class AuditLogOut(BaseModel):
     after: dict[str, Any] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+
+
+class AuthContextOut(BaseModel):
+    kind: str
+    project_id: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    is_operator: bool = False
 
 
 class JobOut(BaseModel):

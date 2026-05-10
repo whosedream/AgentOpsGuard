@@ -1,0 +1,5 @@
+replicaCount:
+  api: 1
+  gateway: 1
+  worker: 1
+  dashboard: 1

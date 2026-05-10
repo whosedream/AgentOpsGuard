@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from agentops_guard.backend.auth import require_scope
+from agentops_guard.backend.auth import AuthContext, authorize_project_access, get_auth_context, require_scope
 from agentops_guard.backend.api.serializers import job_out, mcp_server_out, mcp_tool_out
 from agentops_guard.backend.database import get_db
 from agentops_guard.backend.models import McpServer, McpTool
@@ -16,7 +16,8 @@ v1_router = APIRouter()
 
 
 @v1_router.post("/mcp/servers", response_model=McpServerOut, dependencies=[Depends(require_scope("mcp:admin"))])
-def create_mcp_server(payload: McpServerConfig, db: Session = Depends(get_db)) -> McpServerOut:
+def create_mcp_server(payload: McpServerConfig, request: Request, db: Session = Depends(get_db)) -> McpServerOut:
+    authorize_project_access(get_auth_context(request), payload.project_id)
     ensure_project(db, payload.project_id)
     server_id = payload.id or new_id("mcpserver")
     row = db.get(McpServer, server_id)
@@ -39,24 +40,27 @@ def create_mcp_server(payload: McpServerConfig, db: Session = Depends(get_db)) -
 
 
 @v1_router.get("/mcp/servers", response_model=list[McpServerOut])
-def list_mcp_servers(project_id: str = "default", db: Session = Depends(get_db)) -> list[McpServerOut]:
+def list_mcp_servers(project_id: str = "default", auth: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)) -> list[McpServerOut]:
+    authorize_project_access(auth, project_id)
     rows = db.query(McpServer).filter(McpServer.project_id == project_id).order_by(McpServer.created_at.desc()).all()
     return [mcp_server_out(row) for row in rows]
 
 
 @v1_router.get("/mcp/servers/{server_id}", response_model=McpServerOut)
-def get_mcp_server(server_id: str, db: Session = Depends(get_db)) -> McpServerOut:
+def get_mcp_server(server_id: str, request: Request, db: Session = Depends(get_db)) -> McpServerOut:
     row = db.get(McpServer, server_id)
     if not row:
         raise HTTPException(404, "MCP server not found")
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
     return mcp_server_out(row)
 
 
 @v1_router.patch("/mcp/servers/{server_id}", response_model=McpServerOut, dependencies=[Depends(require_scope("mcp:admin"))])
-def update_mcp_server(server_id: str, payload: McpServerUpdate, db: Session = Depends(get_db)) -> McpServerOut:
+def update_mcp_server(server_id: str, payload: McpServerUpdate, request: Request, db: Session = Depends(get_db)) -> McpServerOut:
     row = db.get(McpServer, server_id)
     if not row:
         raise HTTPException(404, "MCP server not found")
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
     updates = payload.model_dump(exclude_unset=True)
     before = mcp_server_out(row).model_dump(mode="json")
     for key, value in updates.items():
@@ -68,10 +72,11 @@ def update_mcp_server(server_id: str, payload: McpServerUpdate, db: Session = De
 
 
 @v1_router.delete("/mcp/servers/{server_id}", response_model=DeleteResponse, dependencies=[Depends(require_scope("mcp:admin"))])
-def delete_mcp_server(server_id: str, db: Session = Depends(get_db)) -> DeleteResponse:
+def delete_mcp_server(server_id: str, request: Request, db: Session = Depends(get_db)) -> DeleteResponse:
     row = db.get(McpServer, server_id)
     if not row:
         raise HTTPException(404, "MCP server not found")
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
     before = mcp_server_out(row).model_dump(mode="json")
     db.query(McpTool).filter(McpTool.server_id == server_id).delete()
     record_audit(db, project_id=row.project_id, action="mcp_server.delete", resource_type="mcp_server", resource_id=server_id, before=before)
@@ -81,16 +86,18 @@ def delete_mcp_server(server_id: str, db: Session = Depends(get_db)) -> DeleteRe
 
 
 @v1_router.get("/mcp/tools", response_model=list[McpToolOut])
-def list_mcp_tools(project_id: str = "default", db: Session = Depends(get_db)) -> list[McpToolOut]:
+def list_mcp_tools(project_id: str = "default", auth: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)) -> list[McpToolOut]:
+    authorize_project_access(auth, project_id)
     rows = db.query(McpTool).filter(McpTool.project_id == project_id).order_by(McpTool.created_at.desc()).all()
     return [mcp_tool_out(row) for row in rows]
 
 
 @v1_router.post("/mcp/servers/{server_id}/refresh", response_model=JobOut, dependencies=[Depends(require_scope("mcp:admin"))])
-def refresh_mcp_server(server_id: str, db: Session = Depends(get_db)) -> JobOut:
+def refresh_mcp_server(server_id: str, request: Request, db: Session = Depends(get_db)) -> JobOut:
     row = db.get(McpServer, server_id)
     if not row:
         raise HTTPException(404, "MCP server not found")
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
     job = create_job(db, row.project_id, "mcp_refresh", {"server_id": server_id})
     try:
         enqueue_job(db, job)

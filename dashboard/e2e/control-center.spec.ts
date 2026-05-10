@@ -110,6 +110,15 @@ async function handleBackend(route: Route) {
       config: { project_id: "default", store_raw_content: false, policy_fail_mode: "closed_for_high_risk" },
     });
   }
+  if (path === "/v1/auth/context") {
+    return fulfill(route, {
+      kind: "operator",
+      project_id: "default",
+      scopes: ["admin:*", "mcp:admin", "policies:admin"],
+      capabilities: ["admin:*", "mcp:admin", "policies:admin"],
+      is_operator: true,
+    });
+  }
   if (path === "/v1/runs") return fulfill(route, url.searchParams.get("page_mode") === "envelope" ? envelope([run]) : [run]);
   if (path === "/v1/runs/run_demo") return fulfill(route, run);
   if (path === "/v1/runs/run_demo/events") {

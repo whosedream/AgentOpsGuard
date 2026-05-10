@@ -21,3 +21,10 @@ def ensure_project(db: Session, project_id: str) -> Project:
     db.add(project)
     db.flush()
     return project
+
+
+def project_for_resource(db: Session, model, resource_id: str, *, project_field: str = "project_id"):
+    row = db.get(model, resource_id)
+    if row is None:
+        return None, None
+    return row, getattr(row, project_field, None)

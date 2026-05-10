@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
+from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.database import get_db, init_db
 from agentops_guard.backend.models import McpServer, McpTool
 from agentops_guard.backend.schemas import PolicyContext, ScanRequest
@@ -84,8 +85,10 @@ def tools_call(payload: dict[str, Any], project_id: str = "default", db: Session
         )
     )
     if decision.action in {"deny", "quarantine"}:
-        return {"isError": True, "policyDecision": decision.model_dump(), "content": [{"type": "text", "text": decision.reason_code}]}
+        return _error_response(decision.reason_code, policy_decision=decision.model_dump())
     result = _call_upstream_tool(server, tool_name, arguments)
+    if result.get("isError"):
+        return result
     text = _result_text(result)
     scan = scan_content(ScanRequest(project_id=project_id, content=text, source="mcp_tool_result"), db)
     if scan.risk_score >= 0.7:
@@ -101,7 +104,7 @@ def tools_call(payload: dict[str, Any], project_id: str = "default", db: Session
         )
         if post_decision.action in {"deny", "quarantine"}:
             db.commit()
-            return {"isError": True, "policyDecision": post_decision.model_dump(), "content": [{"type": "text", "text": scan.sanitized_text}]}
+            return _error_response(scan.sanitized_text, policy_decision=post_decision.model_dump(), risk=scan.model_dump())
     db.commit()
     if decision.action == "redact" or scan.risk_score >= 0.4:
         return {"content": [{"type": "text", "text": scan.sanitized_text}], "risk": scan.model_dump(), "policyDecision": decision.model_dump()}
@@ -168,14 +171,15 @@ def create_gateway_app(config_path: str | None = None) -> FastAPI:
 
         db = SessionLocal()
         try:
-            load_gateway_config(config_path, db)
+            load_gateway_config(str(config_path), db)
         finally:
             db.close()
+    settings = get_settings()
     app = FastAPI(title="AgentOps Guard MCP Gateway", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=settings.cors_allowed_origins,
+        allow_credentials="*" not in settings.cors_allowed_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -183,17 +187,29 @@ def create_gateway_app(config_path: str | None = None) -> FastAPI:
     return app
 
 
+def get_gateway_app() -> FastAPI:
+    return create_gateway_app()
+
+
 def _load_tools_from_server(server: McpServer, strict: bool = False) -> list[dict[str, Any]]:
+    settings = get_settings()
     if server.transport == "streamable_http" and server.url:
         try:
-            return StreamableHttpTransport(server.url).list_tools()
+            return StreamableHttpTransport(server.url, timeout=settings.gateway_call_timeout_seconds).list_tools()
         except httpx.HTTPError:
             if strict:
                 raise
             return []
     if server.transport == "stdio" and server.command:
         try:
-            response = get_stdio_manager(server.id, server.command, server.args or []).request("tools/list", {})
+            response = get_stdio_manager(
+                server.id,
+                server.command,
+                server.args or [],
+                timeout=settings.gateway_call_timeout_seconds,
+                max_response_bytes=settings.gateway_max_response_bytes,
+                max_stderr_bytes=settings.gateway_max_stderr_bytes,
+            ).request("tools/list", {})
             if strict and "error" in response:
                 raise RuntimeError(str(response["error"]))
             return response.get("result", {}).get("tools", [])
@@ -212,20 +228,38 @@ def _load_tools_from_server(server: McpServer, strict: bool = False) -> list[dic
 
 
 def _call_upstream_tool(server: McpServer, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    settings = get_settings()
     if server.transport == "streamable_http" and server.url:
         try:
-            return StreamableHttpTransport(server.url).call_tool(tool_name, arguments)
+            return StreamableHttpTransport(server.url, timeout=max(settings.gateway_call_timeout_seconds, 30.0)).call_tool(tool_name, arguments)
         except httpx.HTTPError as exc:
-            return {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
+            return _error_response(str(exc), upstream_error={"code": "http_error", "message": str(exc)})
     if server.transport == "stdio" and server.command:
         try:
-            response = get_stdio_manager(server.id, server.command, server.args or []).request("tools/call", {"name": tool_name, "arguments": arguments})
+            response = get_stdio_manager(
+                server.id,
+                server.command,
+                server.args or [],
+                timeout=settings.gateway_call_timeout_seconds,
+                max_response_bytes=settings.gateway_max_response_bytes,
+                max_stderr_bytes=settings.gateway_max_stderr_bytes,
+            ).request("tools/call", {"name": tool_name, "arguments": arguments})
             if "error" in response:
-                return {"isError": True, "content": [{"type": "text", "text": str(response["error"])}]}
+                return _error_response(str(response["error"]), upstream_error=response["error"])
             return response.get("result", {})
         except Exception as exc:
-            return {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
+            return _error_response(str(exc), upstream_error={"code": "stdio_error", "message": str(exc)})
     return {"content": [{"type": "text", "text": str(arguments.get("text", arguments))}]}
+
+
+def _error_response(message: str, *, policy_decision: dict[str, Any] | None = None, risk: dict[str, Any] | None = None, upstream_error: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "isError": True,
+        "content": [{"type": "text", "text": message}],
+        "policyDecision": policy_decision,
+        "risk": risk,
+        "upstreamError": upstream_error,
+    }
 
 
 def _result_text(result: dict[str, Any]) -> str:
@@ -237,6 +271,4 @@ def _result_text(result: dict[str, Any]) -> str:
     return "\n".join(texts) or str(result)
 
 
-app = create_gateway_app()
-
-
+app = get_gateway_app()

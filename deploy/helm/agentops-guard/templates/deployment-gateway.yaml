@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentops-guard-gateway
+spec:
+  replicas: {{ .Values.replicaCount.gateway }}
+  selector:
+    matchLabels:
+      app: agentops-guard-gateway
+  template:
+    metadata:
+      labels:
+        app: agentops-guard-gateway
+    spec:
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uv", "run", "uvicorn", "agentops_guard.gateway.app:app", "--host", "0.0.0.0", "--port", "8001"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentops-guard.name" . }}-config
+            - secretRef:
+                name: {{ include "agentops-guard.name" . }}-secret
+          ports:
+            - containerPort: 8001
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.gateway.readinessPath }}
+              port: 8001
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.gateway.livenessPath }}
+              port: 8001
+          resources:
+            {{- toYaml .Values.resources.gateway | nindent 12 }}

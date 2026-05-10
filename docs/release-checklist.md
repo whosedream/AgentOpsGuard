@@ -3,13 +3,16 @@
 - Run `uv run ruff check .`.
 - Run `uv run pytest --cov=agentops_guard --cov-fail-under=80 -q`.
 - Run `AGENTOPS_DATABASE_URL=sqlite:///./release-migration.sqlite3 uv run alembic upgrade head`.
-- Run `cd dashboard && npm run test && npm run test:e2e && npm run build`.
+- Run `uv run python scripts/validate_helm_assets.py`.
+- Run `powershell -File scripts/helm_template_check.ps1`.
+- Run `uv run python scripts/helm_template_check.py`.
+  - The script prefers a local `helm` binary, then `%TEMP%\helm-v3.18.4\windows-amd64\helm.exe`, then `AGENTOPS_HELM_IMAGE`.
+- Run `cd dashboard && npm ci && npm run test && npm run test:e2e && npm run build`.
 - Run `docker compose config --quiet`.
 - Start `docker compose up --build -d` and smoke `/readyz`, `/mcp/tools/list`, a replay job, and Dashboard `/setup`.
 - Confirm `docker compose ps` shows API, Gateway, Worker, Redis, Postgres, Dashboard, and the migration job completed successfully.
 - Review API contract changes in `specs/api-contracts.md`.
 - Confirm no backend API key is exposed through `NEXT_PUBLIC_` variables.
-
 - Smoke `/readyz` and confirm `migration.status` is `ok` in migrated environments or `skipped` only for local SQLite development.
 - Smoke `/metrics` and confirm governance/job metrics are present without high-cardinality labels.
 - Capture one API request log line and confirm it is parseable JSON with `request_id`, `method`, `path`, `status`, and `duration_ms`.
@@ -18,3 +21,5 @@
 - Review `docs/mcp-gateway.md` and smoke server register, refresh, quarantine/restore, and tool call flows.
 - Confirm `CHANGELOG.md` captures governance, ops hardening, Dashboard, and MCP changes for v0.7.
 - Confirm Dashboard BFF proxy preserves query strings for Runs/Risks filters, pagination, and project-scoped requests.
+- Confirm `dashboard/package.json` uses pinned dependency versions, not `latest`, and `dashboard/package-lock.json` is updated.
+- Run `cd dashboard && npm audit --omit=dev`; document any Next.js transitive advisory that cannot be remediated without a framework downgrade or an upstream patched release.

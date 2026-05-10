@@ -49,6 +49,14 @@ export async function gatewayPost<T>(path: string, body?: unknown): Promise<T> {
   return request<T>(gatewayBase(), path, { method: "POST", body: JSON.stringify(body ?? {}) });
 }
 
+export type AuthContext = {
+  kind: string;
+  project_id?: string | null;
+  scopes: string[];
+  capabilities: string[];
+  is_operator: boolean;
+};
+
 export type Page<T> = { items: T[]; next_cursor?: string | null };
 
 export function pageItems<T>(value: T[] | Page<T>): T[] {
@@ -272,4 +280,12 @@ export type EvalRun = { id: string; project_id: string; suite_id?: string; statu
 export type McpServer = { id: string; project_id: string; name: string; transport: string; command?: string; args: string[]; url?: string; trust_level: string; allowed_agents: string[]; status: string; created_at: string };
 export type McpTool = { name: string; serverId?: string; server_id?: string; description?: string; riskScore?: number; risk_score?: number; riskLabels?: string[]; risk_labels?: string[]; status?: string };
 export type Job = { id: string; project_id: string; kind: string; status: string; rq_job_id?: string | null; payload: Record<string, unknown>; result?: Record<string, unknown> | null; error?: string | null; attempts: number; created_at: string; started_at?: string | null; finished_at?: string | null };
+
+export function canManageGovernance(auth: AuthContext): boolean {
+  return auth.is_operator || auth.capabilities.includes("policies:admin") || auth.capabilities.includes("admin:*");
+}
+
+export function canManageMcp(auth: AuthContext): boolean {
+  return auth.is_operator || auth.capabilities.includes("mcp:admin") || auth.capabilities.includes("admin:*");
+}
 

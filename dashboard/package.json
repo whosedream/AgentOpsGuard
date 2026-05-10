@@ -1,32 +1,32 @@
 {
-    "scripts":  {
-                    "dev":  "next dev -p 3000",
-                    "build":  "next build",
-                    "start":  "next start -p 3000",
-                    "lint":  "next lint",
-                    "test":  "vitest run",
-                    "test:e2e":  "playwright test"
-                },
-    "dependencies":  {
-                         "@tanstack/react-query":  "latest",
-                         "autoprefixer":  "latest",
-                         "echarts":  "latest",
-                         "next":  "latest",
-                         "postcss":  "latest",
-                         "react":  "latest",
-                         "react-dom":  "latest",
-                         "reactflow":  "latest",
-                         "recharts":  "latest",
-                         "tailwindcss":  "latest",
-                         "@tailwindcss/postcss":  "latest"
-                     },
-    "devDependencies":  {
-                            "@types/node":  "latest",
-                            "@types/react":  "latest",
-                            "@types/react-dom":  "latest",
-                            "typescript":  "latest",
-                            "vitest":  "latest",
-                            "@playwright/test":  "latest",
-                            "jsdom":  "latest"
-                        }
+    "scripts": {
+        "dev": "node ./node_modules/next/dist/bin/next dev -p 3000",
+        "build": "node ./node_modules/next/dist/bin/next build",
+        "start": "node ./node_modules/next/dist/bin/next start -p 3000",
+        "lint": "node ./node_modules/next/dist/bin/next lint",
+        "test": "node ./node_modules/vitest/vitest.mjs run",
+        "test:e2e": "node ./node_modules/@playwright/test/cli.js test"
+    },
+    "dependencies": {
+        "@tailwindcss/postcss": "4.2.4",
+        "@tanstack/react-query": "5.100.6",
+        "autoprefixer": "10.5.0",
+        "echarts": "6.0.0",
+        "next": "16.2.4",
+        "postcss": "8.5.12",
+        "react": "19.2.5",
+        "react-dom": "19.2.5",
+        "reactflow": "11.11.4",
+        "recharts": "3.8.1",
+        "tailwindcss": "4.2.4"
+    },
+    "devDependencies": {
+        "@playwright/test": "1.59.1",
+        "@types/node": "25.6.0",
+        "@types/react": "19.2.14",
+        "@types/react-dom": "19.2.3",
+        "jsdom": "29.1.1",
+        "typescript": "6.0.3",
+        "vitest": "4.1.5"
+    }
 }

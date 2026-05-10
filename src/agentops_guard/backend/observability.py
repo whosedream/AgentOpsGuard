@@ -2,27 +2,79 @@ from __future__ import annotations
 
 import json
 import time
-from collections import Counter
 from uuid import uuid4
 
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-
-REQUEST_COUNTS: Counter[tuple[str, str, int]] = Counter()
-REQUEST_LATENCY_MS: Counter[tuple[str, str]] = Counter()
+PROMETHEUS_REGISTRY = CollectorRegistry()
+REQUEST_COUNTER = Counter(
+    "agentops_api_requests_total",
+    "Total API requests",
+    ("method", "route", "status"),
+    registry=PROMETHEUS_REGISTRY,
+)
+REQUEST_LATENCY = Histogram(
+    "agentops_api_request_latency_ms",
+    "API request latency in milliseconds",
+    ("method", "route"),
+    registry=PROMETHEUS_REGISTRY,
+    buckets=(5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000),
+)
+RUNS_GAUGE = Gauge("agentops_runs_total", "Total runs", registry=PROMETHEUS_REGISTRY)
+RISKS_GAUGE = Gauge("agentops_risks_total", "Total risk events", registry=PROMETHEUS_REGISTRY)
+JOBS_GAUGE = Gauge("agentops_jobs_total", "Total background jobs", registry=PROMETHEUS_REGISTRY)
+POLICY_DECISIONS_GAUGE = Gauge(
+    "agentops_policy_decisions_total",
+    "Total policy decisions by action and severity",
+    ("action", "severity"),
+    registry=PROMETHEUS_REGISTRY,
+)
+APPROVALS_PENDING_GAUGE = Gauge("agentops_approvals_pending", "Total pending approvals", registry=PROMETHEUS_REGISTRY)
+POLICY_PACKS_GAUGE = Gauge(
+    "agentops_policy_packs_total",
+    "Total policy packs by status",
+    ("status",),
+    registry=PROMETHEUS_REGISTRY,
+)
+SCAN_RULES_GAUGE = Gauge(
+    "agentops_scan_rules_total",
+    "Total scan rules by status and severity",
+    ("status", "severity"),
+    registry=PROMETHEUS_REGISTRY,
+)
+MCP_SERVERS_GAUGE = Gauge(
+    "agentops_mcp_servers_total",
+    "Total MCP servers by status",
+    ("status",),
+    registry=PROMETHEUS_REGISTRY,
+)
+MCP_TOOLS_GAUGE = Gauge(
+    "agentops_mcp_tools_total",
+    "Total MCP tools by status",
+    ("status",),
+    registry=PROMETHEUS_REGISTRY,
+)
+JOBS_BY_STATUS_GAUGE = Gauge(
+    "agentops_jobs_by_status_total",
+    "Total background jobs by kind and status",
+    ("kind", "status"),
+    registry=PROMETHEUS_REGISTRY,
+)
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request_id = request.headers.get("X-Request-Id") or f"req_{uuid4().hex}"
+        request.state.request_id = request_id
         start = time.perf_counter()
         response: Response = await call_next(request)
         duration_ms = int((time.perf_counter() - start) * 1000)
         route = request.url.path
-        REQUEST_COUNTS[(request.method, route, response.status_code)] += 1
-        REQUEST_LATENCY_MS[(request.method, route)] += duration_ms
+        REQUEST_COUNTER.labels(method=request.method, route=route, status=str(response.status_code)).inc()
+        REQUEST_LATENCY.labels(method=request.method, route=route).observe(duration_ms)
         response.headers["X-Request-Id"] = request_id
         log_record = {
             "request_id": request_id,
@@ -38,17 +90,5 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def request_metrics_lines() -> list[str]:
-    lines = [
-        "# HELP agentops_api_requests_total Total API requests",
-        "# TYPE agentops_api_requests_total counter",
-    ]
-    for (method, route, status), count in REQUEST_COUNTS.items():
-        lines.append(f'agentops_api_requests_total{{method="{method}",route="{route}",status="{status}"}} {count}')
-    lines += [
-        "# HELP agentops_api_request_latency_ms_total Total API request latency in milliseconds",
-        "# TYPE agentops_api_request_latency_ms_total counter",
-    ]
-    for (method, route), total in REQUEST_LATENCY_MS.items():
-        lines.append(f'agentops_api_request_latency_ms_total{{method="{method}",route="{route}"}} {total}')
-    return lines
+def metrics_payload() -> bytes:
+    return generate_latest(PROMETHEUS_REGISTRY)

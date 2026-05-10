@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentops-guard-worker
+spec:
+  replicas: {{ .Values.replicaCount.worker }}
+  selector:
+    matchLabels:
+      app: agentops-guard-worker
+  template:
+    metadata:
+      labels:
+        app: agentops-guard-worker
+    spec:
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uv", "run", "agentops-guard", "worker", "--queue", "default", "--with-scheduler"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentops-guard.name" . }}-config
+            - secretRef:
+                name: {{ include "agentops-guard.name" . }}-secret
+          resources:
+            {{- toYaml .Values.resources.worker | nindent 12 }}

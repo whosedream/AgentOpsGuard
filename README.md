@@ -39,6 +39,8 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+For reproducible installs in CI and release verification, use `npm ci` instead of `npm install`. The Dashboard dependencies are pinned in `dashboard/package.json` and locked by `dashboard/package-lock.json`; do not use `latest` ranges for release-bound dependencies.
+
 The Dashboard backend proxy uses `AGENTOPS_SERVER_API_KEY` or `AGENTOPS_API_KEY` on the server side. Do not expose backend API keys with `NEXT_PUBLIC_` variables.
 
 The Governance page (`/governance`) exposes the v0.7 control plane: project retention/raw-content settings, pending approvals, policy packs, custom scan rules, run status mix, and suppression workflows.
@@ -89,21 +91,35 @@ See `docs/sdk.md` for the Python SDK quickstart, trace/span usage, scanner/polic
 
 ## Environment
 
+- `AGENTOPS_ENV`: `dev`, `test`, or `prod`. Production rejects the default development API key and wildcard CORS.
 - `AGENTOPS_API_KEY`: API key for SDK and dashboard requests.
+- `AGENTOPS_OPERATOR_API_KEY`: Operator-only bootstrap key for cross-project governance and initial provisioning.
 - `AGENTOPS_SERVER_API_KEY`: Server-only Dashboard proxy API key.
 - `AGENTOPS_DATABASE_URL`: SQLAlchemy database URL. Defaults to local SQLite `agentops_guard.sqlite3`.
 - `AGENTOPS_REDIS_URL`: Redis URL for RQ jobs. Defaults to `redis://localhost:6379/0`.
+- `AGENTOPS_ALLOW_SCHEMA_BOOTSTRAP`: Only enable for local SQLite development bootstrap.
 - `AGENTOPS_STORE_RAW_CONTENT`: Set to `true` only when full replay requires raw prompt/tool content.
 - `AGENTOPS_POLICY_FAIL_MODE`: Default `closed_for_high_risk`.
+- `AGENTOPS_SCANNER_PLUGINS`: Comma-separated `module:factory` scanner provider plugins.
 
 ## Docker Compose
 
 ```powershell
 docker compose up --build
+uv run python scripts/compose_smoke.py
 ```
 
 The compose stack starts API, Gateway, Worker, Redis, Postgres, and Dashboard.
 Production-style deployments should run `uv run alembic upgrade head` before API, Gateway, and Worker startup. The compose stack includes a one-shot migration service for this.
+
+## Helm
+
+```powershell
+uv run python scripts/validate_helm_assets.py
+powershell -File scripts/helm_template_check.ps1
+```
+
+Set `AGENTOPS_HELM_IMAGE` if your environment cannot pull the default Helm image used by the validation helper.
 
 ## Operations
 
@@ -117,6 +133,18 @@ Production-style deployments should run `uv run alembic upgrade head` before API
 ```powershell
 uv run pytest
 uv run ruff check .
+```
+
+Before opening a release PR, also run the Dashboard and deployment gates:
+
+```powershell
+cd dashboard
+npm ci
+npm run test
+npm run test:e2e
+npm run build
+cd ..
+docker compose config --quiet
 ```
 
 The repository uses `uv` for Python environment management.

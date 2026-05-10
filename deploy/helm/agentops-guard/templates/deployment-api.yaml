@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentops-guard-api
+spec:
+  replicas: {{ .Values.replicaCount.api }}
+  selector:
+    matchLabels:
+      app: agentops-guard-api
+  template:
+    metadata:
+      labels:
+        app: agentops-guard-api
+    spec:
+      {{- if .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range .Values.image.pullSecrets }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uv", "run", "uvicorn", "agentops_guard.backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentops-guard.name" . }}-config
+            - secretRef:
+                name: {{ include "agentops-guard.name" . }}-secret
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.api.readinessPath }}
+              port: 8000
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.api.livenessPath }}
+              port: 8000
+          resources:
+            {{- toYaml .Values.resources.api | nindent 12 }}

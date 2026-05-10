@@ -7,7 +7,19 @@ from sqlalchemy.orm import Session
 from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.database import get_db
 from agentops_guard.backend.models import ApprovalRequest, BackgroundJob, EvalRun, EvalSuite, McpServer, McpTool, PolicyDecision, PolicyPack, Project, ReplayRun, RiskEvent, Run, RunSuppression, ScanRule
-from agentops_guard.backend.observability import request_metrics_lines
+from agentops_guard.backend.observability import (
+    APPROVALS_PENDING_GAUGE,
+    JOBS_BY_STATUS_GAUGE,
+    JOBS_GAUGE,
+    MCP_SERVERS_GAUGE,
+    MCP_TOOLS_GAUGE,
+    POLICY_DECISIONS_GAUGE,
+    POLICY_PACKS_GAUGE,
+    RISKS_GAUGE,
+    RUNS_GAUGE,
+    SCAN_RULES_GAUGE,
+    metrics_payload,
+)
 from agentops_guard.backend.schemas import ComponentStatus, SystemConfig, SystemCounts, SystemStatusOut
 from agentops_guard.backend.services.jobs import redis_connection
 from agentops_guard.backend.services.migrations import migration_status
@@ -53,56 +65,27 @@ def readyz(response: Response, db: Session = Depends(get_db)) -> dict[str, Compo
 
 @router.get("/metrics")
 def metrics(db: Session = Depends(get_db)) -> PlainTextResponse:
-    lines = [
-        *request_metrics_lines(),
-        "# HELP agentops_runs_total Total runs",
-        "# TYPE agentops_runs_total gauge",
-        f"agentops_runs_total {db.query(Run).count()}",
-        "# HELP agentops_risks_total Total risk events",
-        "# TYPE agentops_risks_total gauge",
-        f"agentops_risks_total {db.query(RiskEvent).count()}",
-        "# HELP agentops_jobs_total Total background jobs",
-        "# TYPE agentops_jobs_total gauge",
-        f"agentops_jobs_total {db.query(BackgroundJob).count()}",
-        "# HELP agentops_policy_decisions_total Total policy decisions by action and severity",
-        "# TYPE agentops_policy_decisions_total gauge",
-        *grouped_metric_lines(db, PolicyDecision, "agentops_policy_decisions_total", ("action", "severity")),
-        "# HELP agentops_approvals_pending Total pending approvals",
-        "# TYPE agentops_approvals_pending gauge",
-        f'agentops_approvals_pending {db.query(ApprovalRequest).filter(ApprovalRequest.status == "pending").count()}',
-        "# HELP agentops_policy_packs_total Total policy packs by status",
-        "# TYPE agentops_policy_packs_total gauge",
-        *grouped_metric_lines(db, PolicyPack, "agentops_policy_packs_total", ("status",)),
-        "# HELP agentops_scan_rules_total Total scan rules by status and severity",
-        "# TYPE agentops_scan_rules_total gauge",
-        *grouped_metric_lines(db, ScanRule, "agentops_scan_rules_total", ("status", "severity")),
-        "# HELP agentops_mcp_servers_total Total MCP servers by status",
-        "# TYPE agentops_mcp_servers_total gauge",
-        *grouped_metric_lines(db, McpServer, "agentops_mcp_servers_total", ("status",)),
-        "# HELP agentops_mcp_tools_total Total MCP tools by status",
-        "# TYPE agentops_mcp_tools_total gauge",
-        *grouped_metric_lines(db, McpTool, "agentops_mcp_tools_total", ("status",)),
-        "# HELP agentops_jobs_by_status_total Total background jobs by kind and status",
-        "# TYPE agentops_jobs_by_status_total gauge",
-        *grouped_metric_lines(db, BackgroundJob, "agentops_jobs_by_status_total", ("kind", "status")),
-    ]
-    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+    RUNS_GAUGE.set(db.query(Run).count())
+    RISKS_GAUGE.set(db.query(RiskEvent).count())
+    JOBS_GAUGE.set(db.query(BackgroundJob).count())
+    APPROVALS_PENDING_GAUGE.set(db.query(ApprovalRequest).filter(ApprovalRequest.status == "pending").count())
+    _set_grouped_gauge(db, PolicyDecision, POLICY_DECISIONS_GAUGE, ("action", "severity"))
+    _set_grouped_gauge(db, PolicyPack, POLICY_PACKS_GAUGE, ("status",))
+    _set_grouped_gauge(db, ScanRule, SCAN_RULES_GAUGE, ("status", "severity"))
+    _set_grouped_gauge(db, McpServer, MCP_SERVERS_GAUGE, ("status",))
+    _set_grouped_gauge(db, McpTool, MCP_TOOLS_GAUGE, ("status",))
+    _set_grouped_gauge(db, BackgroundJob, JOBS_BY_STATUS_GAUGE, ("kind", "status"))
+    return PlainTextResponse(metrics_payload().decode("utf-8"), media_type="text/plain; version=0.0.4")
 
 
-def grouped_metric_lines(db: Session, model, metric_name: str, fields: tuple[str, ...]) -> list[str]:
+def _set_grouped_gauge(db: Session, model, gauge, fields: tuple[str, ...]) -> None:
     columns = [getattr(model, field) for field in fields]
     rows = db.query(*columns, func.count()).group_by(*columns).all()
-    lines = []
+    gauge.clear()
     for row in rows:
         values = row[:-1]
         count = row[-1]
-        labels = ",".join(f'{field}="{metric_label(value)}"' for field, value in zip(fields, values, strict=True))
-        lines.append(f"{metric_name}{{{labels}}} {count}")
-    return lines
-
-
-def metric_label(value: object) -> str:
-    return str(value or "unknown").replace("\\", "\\\\").replace('"', '\"')
+        gauge.labels(*[str(value or "unknown") for value in values]).set(count)
 
 
 @v1_router.get("/system/status", response_model=SystemStatusOut)

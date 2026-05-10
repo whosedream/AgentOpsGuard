@@ -21,6 +21,7 @@ from agentops_guard.backend.schemas import (
     PolicyPackCreate,
     PolicyPackOut,
     PolicyPackUpdate,
+    PolicyPackVersionCreate,
     ProjectCreate,
     ProjectOut,
     ProjectUpdate,
@@ -75,6 +76,7 @@ def approval_out(row: ApprovalRequest) -> ApprovalRequestOut:
 def policy_pack_out(row: PolicyPack) -> PolicyPackOut:
     return PolicyPackOut(
         id=row.id,
+        family_id=row.family_id,
         project_id=row.project_id,
         name=row.name,
         version=row.version,
@@ -234,8 +236,10 @@ def review_approval_request(db: Session, approval_id: str, payload: ApprovalRevi
 
 def create_policy_pack(db: Session, payload: PolicyPackCreate) -> PolicyPackOut:
     ensure_project(db, payload.project_id)
+    family_id = new_id("pack_family")
     row = PolicyPack(
         id=new_id("pack"),
+        family_id=family_id,
         project_id=payload.project_id,
         name=payload.name,
         version=payload.version,
@@ -256,12 +260,41 @@ def create_policy_pack(db: Session, payload: PolicyPackCreate) -> PolicyPackOut:
     return policy_pack_out(row)
 
 
+def create_policy_pack_version(db: Session, pack_id: str, payload: PolicyPackVersionCreate) -> PolicyPackOut:
+    source = db.get(PolicyPack, pack_id)
+    if source is None:
+        raise ValueError("Policy pack not found")
+    row = PolicyPack(
+        id=new_id("pack"),
+        family_id=source.family_id or source.id,
+        project_id=source.project_id,
+        name=source.name,
+        version=payload.version,
+        status=payload.status,
+        description=payload.description,
+        rules=payload.rules,
+    )
+    db.add(row)
+    db.flush()
+    record_audit(
+        db,
+        project_id=source.project_id,
+        action="policy_pack.version.create",
+        resource_type="policy_pack",
+        resource_id=row.id,
+        after=policy_pack_out(row).model_dump(mode="json"),
+    )
+    return policy_pack_out(row)
+
+
 def update_policy_pack(db: Session, pack_id: str, payload: PolicyPackUpdate) -> PolicyPackOut:
     row = db.get(PolicyPack, pack_id)
     if row is None:
         raise ValueError("Policy pack not found")
     before = policy_pack_out(row).model_dump(mode="json")
     updates = payload.model_dump(exclude_unset=True)
+    if "rules" in updates:
+        raise ValueError("Policy pack rules must be versioned through a new revision")
     for key, value in updates.items():
         setattr(row, key, value)
     record_audit(

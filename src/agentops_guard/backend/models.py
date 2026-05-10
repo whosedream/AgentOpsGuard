@@ -136,6 +136,7 @@ class PolicyPack(Base):
     __tablename__ = "policy_packs"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    family_id: Mapped[str] = mapped_column(String(64), index=True, default="")
     project_id: Mapped[str] = mapped_column(String(64), index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     version: Mapped[str] = mapped_column(String(64), default="0.1.0")
