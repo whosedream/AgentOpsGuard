@@ -1,0 +1,80 @@
+services:
+  migration:
+    build: .
+    command: uv run alembic upgrade head
+    environment:
+      AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
+    depends_on:
+      - postgres
+
+  api:
+    build: .
+    command: uv run uvicorn agentops_guard.backend.main:app --host 0.0.0.0 --port 8000
+    environment:
+      AGENTOPS_API_KEY: dev-agentops-key
+      AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
+      AGENTOPS_REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - migration
+      - redis
+
+  gateway:
+    build: .
+    command: uv run uvicorn agentops_guard.gateway.app:app --host 0.0.0.0 --port 8001
+    environment:
+      AGENTOPS_API_KEY: dev-agentops-key
+      AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
+      AGENTOPS_REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8001:8001"
+    depends_on:
+      - migration
+      - redis
+
+  worker:
+    build: .
+    command: uv run agentops-guard worker --queue default --with-scheduler
+    environment:
+      AGENTOPS_API_KEY: dev-agentops-key
+      AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
+      AGENTOPS_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - migration
+      - redis
+
+  dashboard:
+    image: node:22-bookworm-slim
+    working_dir: /app/dashboard
+    command: sh -c "npm install && npm run dev -- --hostname 0.0.0.0"
+    environment:
+      AGENTOPS_SERVER_API_URL: http://api:8000
+      AGENTOPS_SERVER_GATEWAY_URL: http://gateway:8001
+      AGENTOPS_SERVER_API_KEY: dev-agentops-key
+    volumes:
+      - .:/app
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+      - gateway
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: agentops
+      POSTGRES_USER: agentops
+      POSTGRES_PASSWORD: agentops
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:

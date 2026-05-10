@@ -1,0 +1,10 @@
+﻿import { test } from "@playwright/test";
+
+test("debug setup requests", async ({ page }) => {
+  page.on("request", (request) => console.log("REQ", request.method(), request.url()));
+  page.on("requestfailed", (request) => console.log("FAIL", request.url(), request.failure()?.errorText));
+  page.on("response", (response) => console.log("RES", response.status(), response.url()));
+  page.on("console", (message) => console.log("CONSOLE", message.type(), message.text()));
+  await page.goto("/setup");
+  await page.waitForTimeout(3000);
+});

@@ -1,0 +1,20 @@
+# Release Checklist
+
+- Run `uv run ruff check .`.
+- Run `uv run pytest --cov=agentops_guard --cov-fail-under=80 -q`.
+- Run `AGENTOPS_DATABASE_URL=sqlite:///./release-migration.sqlite3 uv run alembic upgrade head`.
+- Run `cd dashboard && npm run test && npm run test:e2e && npm run build`.
+- Run `docker compose config --quiet`.
+- Start `docker compose up --build -d` and smoke `/readyz`, `/mcp/tools/list`, a replay job, and Dashboard `/setup`.
+- Confirm `docker compose ps` shows API, Gateway, Worker, Redis, Postgres, Dashboard, and the migration job completed successfully.
+- Review API contract changes in `specs/api-contracts.md`.
+- Confirm no backend API key is exposed through `NEXT_PUBLIC_` variables.
+
+- Smoke `/readyz` and confirm `migration.status` is `ok` in migrated environments or `skipped` only for local SQLite development.
+- Smoke `/metrics` and confirm governance/job metrics are present without high-cardinality labels.
+- Capture one API request log line and confirm it is parseable JSON with `request_id`, `method`, `path`, `status`, and `duration_ms`.
+- Review `specs/api-contracts.md` for operations, metrics, and v0.7 governance API changes.
+- Review `docs/sdk.md` and run the SDK quickstart smoke against a local API.
+- Review `docs/mcp-gateway.md` and smoke server register, refresh, quarantine/restore, and tool call flows.
+- Confirm `CHANGELOG.md` captures governance, ops hardening, Dashboard, and MCP changes for v0.7.
+- Confirm Dashboard BFF proxy preserves query strings for Runs/Risks filters, pagination, and project-scoped requests.

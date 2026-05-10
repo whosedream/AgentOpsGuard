@@ -1,0 +1,56 @@
+from sqlalchemy.orm import Session
+
+from agentops_guard.backend.models import McpServer, McpTool
+from agentops_guard.backend.schemas import ScanRequest
+from agentops_guard.backend.services.audit import record_audit
+from agentops_guard.backend.services.scanner import scan_content
+from agentops_guard.gateway.app import _load_tools_from_server
+
+
+def refresh_mcp_tools(db: Session, server_id: str) -> dict[str, object]:
+    server = db.get(McpServer, server_id)
+    if not server:
+        raise ValueError(f"MCP server not found: {server_id}")
+    refreshed = 0
+    try:
+        tools = _load_tools_from_server(server, strict=True)
+        for tool in tools:
+            description = tool.get("description") or ""
+            scan = scan_content(ScanRequest(project_id=server.project_id, content=description, source="mcp_tool_description"), db)
+            status = "quarantined" if scan.risk_score >= 0.7 else "active"
+            tool_id = f"{server.id}:{tool.get('name')}"
+            row = db.get(McpTool, tool_id)
+            if row is None:
+                row = McpTool(id=tool_id, project_id=server.project_id, server_id=server.id, name=tool.get("name", "unknown"))
+                db.add(row)
+            row.description = description
+            row.input_schema = tool.get("inputSchema", {})
+            row.annotations = tool.get("annotations", {})
+            row.risk_score = scan.risk_score
+            row.risk_labels = scan.risk_labels
+            row.status = status
+            refreshed += 1
+        if server.status == "error":
+            server.status = "active"
+        record_audit(
+            db,
+            project_id=server.project_id,
+            action="mcp_server.refresh_completed",
+            resource_type="mcp_server",
+            resource_id=server.id,
+            after={"tools": refreshed},
+        )
+        db.flush()
+        return {"status": "completed", "server_id": server_id, "tools": refreshed}
+    except Exception as exc:
+        server.status = "error"
+        record_audit(
+            db,
+            project_id=server.project_id,
+            action="mcp_server.refresh_failed",
+            resource_type="mcp_server",
+            resource_id=server.id,
+            after={"error": str(exc)},
+        )
+        db.flush()
+        raise

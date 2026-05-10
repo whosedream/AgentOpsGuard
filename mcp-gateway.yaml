@@ -1,0 +1,22 @@
+﻿servers:
+  local_files:
+    transport: stdio
+    command: "uvx"
+    args: ["mcp-server-filesystem", "./workspace"]
+    trust_level: "internal"
+    allowed_agents: ["coding-agent"]
+
+  web_search:
+    transport: streamable_http
+    url: "https://example.com/mcp"
+    trust_level: "external"
+    allowed_agents: ["research-agent"]
+
+policies:
+  fail_mode: "closed_for_high_risk"
+  scan_tool_descriptions: true
+  scan_tool_outputs: true
+  require_approval_for:
+    - "shell.execute"
+    - "filesystem.write"
+    - "database.write"

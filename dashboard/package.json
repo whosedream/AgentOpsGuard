@@ -1,0 +1,32 @@
+{
+    "scripts":  {
+                    "dev":  "next dev -p 3000",
+                    "build":  "next build",
+                    "start":  "next start -p 3000",
+                    "lint":  "next lint",
+                    "test":  "vitest run",
+                    "test:e2e":  "playwright test"
+                },
+    "dependencies":  {
+                         "@tanstack/react-query":  "latest",
+                         "autoprefixer":  "latest",
+                         "echarts":  "latest",
+                         "next":  "latest",
+                         "postcss":  "latest",
+                         "react":  "latest",
+                         "react-dom":  "latest",
+                         "reactflow":  "latest",
+                         "recharts":  "latest",
+                         "tailwindcss":  "latest",
+                         "@tailwindcss/postcss":  "latest"
+                     },
+    "devDependencies":  {
+                            "@types/node":  "latest",
+                            "@types/react":  "latest",
+                            "@types/react-dom":  "latest",
+                            "typescript":  "latest",
+                            "vitest":  "latest",
+                            "@playwright/test":  "latest",
+                            "jsdom":  "latest"
+                        }
+}
