@@ -3,6 +3,7 @@
 *.sqlite3
 *.db
 .env
+.env.*
 .venv/
 .pytest_cache/
 .ruff_cache/
@@ -11,3 +12,5 @@ node_modules/
 dist/
 build/
 .coverage
+.omc/state/
+.omc/sessions/
