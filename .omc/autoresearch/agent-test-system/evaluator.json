@@ -1,0 +1,7 @@
+{
+  "type": "pytest_playwright",
+  "pytest_command": "cd \"D:\\CodeField\\AgentOps Guard\" && python -m pytest tests/ --cov=src/agentops_guard --cov-report=term-missing --cov-fail-under=80 -x",
+  "playwright_command": "cd \"D:\\CodeField\\AgentOps Guard\\dashboard\" && npx playwright test",
+  "pass_condition": "both_commands_exit_zero",
+  "coverage_threshold": 80
+}

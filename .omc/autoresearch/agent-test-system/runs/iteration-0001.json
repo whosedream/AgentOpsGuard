@@ -1,0 +1,52 @@
+{
+  "iteration": 1,
+  "timestamp": "2026-06-03T12:45:00Z",
+  "evaluator": "pytest+playwright",
+  "result": {
+    "pass": true,
+    "score": 0.83,
+    "pytest": {
+      "total": 144,
+      "passed": 141,
+      "skipped": 3,
+      "failed": 0,
+      "coverage_percent": 82.88,
+      "coverage_threshold": 80,
+      "coverage_met": true
+    },
+    "playwright": {
+      "total": 5,
+      "passed": 5,
+      "failed": 0
+    },
+    "agent_tests": {
+      "total": 80,
+      "passed": 77,
+      "skipped": 3,
+      "failed": 0,
+      "skipped_reason": "MIMO_API_KEY not set (MiMo adversarial tests)",
+      "interception_rate": 0.556,
+      "false_positive_rate": 0.0,
+      "accuracy": 0.88
+    }
+  },
+  "artifacts_created": [
+    "tests/agent_test/__init__.py",
+    "tests/agent_test/mimo_client.py",
+    "tests/agent_test/attack_cases.py",
+    "tests/agent_test/conftest.py",
+    "tests/agent_test/test_e2e_guard.py",
+    "tests/agent_test/test_eval_integration.py",
+    "tests/agent_test/test_mimo_adversarial.py",
+    "tests/agent_test/test_report.py"
+  ],
+  "attack_cases_count": 21,
+  "categories_covered": [
+    "prompt_injection",
+    "credential_exfiltration",
+    "dangerous_command",
+    "tool_hijacking",
+    "data_exfiltration",
+    "benign"
+  ]
+}
