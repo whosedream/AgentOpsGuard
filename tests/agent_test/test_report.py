@@ -6,10 +6,6 @@ with interception rate, false positive rate, and false negative rate.
 
 from __future__ import annotations
 
-import json
-
-import pytest
-
 from agentops_guard.backend.schemas import PolicyContext, ScanRequest
 from agentops_guard.backend.services.policy import evaluate_builtin_policy
 from agentops_guard.backend.services.scanner import scan_content

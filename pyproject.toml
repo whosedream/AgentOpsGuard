@@ -46,6 +46,7 @@ packages = ["src/agentops_guard"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+exclude = [".codex/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
