@@ -14,7 +14,11 @@ os.environ.setdefault("AGENTOPS_ALLOW_SCHEMA_BOOTSTRAP", "true")
 def mimo_config():
     """MiMo API configuration from environment."""
     from tests.agent_test.mimo_client import MiMoConfig
-    return MiMoConfig()
+    config = MiMoConfig()
+    config.api_key = os.environ.get("MIMO_API_KEY", config.api_key)
+    config.base_url = os.environ.get("MIMO_BASE_URL", config.base_url)
+    config.model = os.environ.get("MIMO_MODEL", config.model)
+    return config
 
 
 @pytest.fixture

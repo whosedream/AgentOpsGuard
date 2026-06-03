@@ -15,14 +15,18 @@ from typing import Any
 @dataclass
 class MiMoConfig:
     api_key: str = ""
-    base_url: str = "https://api.xiaomimimo.com/v1"
-    model: str = "mimo-v2.5-pro"
+    base_url: str = "https://code.mmkg.cloud/v1"
+    model: str = "gpt-5.4"
     max_tokens: int = 1024
     temperature: float = 0.7
 
     def __post_init__(self) -> None:
         if not self.api_key:
             self.api_key = os.environ.get("MIMO_API_KEY", "")
+        if self.base_url == "https://code.mmkg.cloud/v1":
+            self.base_url = os.environ.get("MIMO_BASE_URL", self.base_url)
+        if self.model == "gpt-5.4":
+            self.model = os.environ.get("MIMO_MODEL", self.model)
 
 
 @dataclass
