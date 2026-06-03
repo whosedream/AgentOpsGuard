@@ -9,7 +9,7 @@ from __future__ import annotations
 from agentops_guard.backend.schemas import PolicyContext, ScanRequest
 from agentops_guard.backend.services.policy import evaluate_builtin_policy
 from agentops_guard.backend.services.scanner import scan_content
-from tests.agent_test.attack_cases import ATTACK_CASES, get_attack_cases, get_benign_cases
+from .attack_cases import ATTACK_CASES, get_attack_cases, get_benign_cases
 
 
 def _evaluate_case(case):
@@ -129,7 +129,7 @@ class TestEvaluationReport:
         benigns = get_benign_cases()
         results = [_evaluate_case(c) for c in benigns]
         # Count cases where action doesn't match expected
-        from tests.agent_test.attack_cases import get_benign_cases as gbc
+        from .attack_cases import get_benign_cases as gbc
         benign_cases = gbc()
         false_positives = sum(
             1 for r, c in zip(results, benign_cases) if r["action"] != c.expected_action

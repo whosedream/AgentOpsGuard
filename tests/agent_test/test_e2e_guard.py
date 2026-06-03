@@ -11,7 +11,7 @@ import pytest
 from agentops_guard.backend.schemas import PolicyContext, ScanRequest
 from agentops_guard.backend.services.policy import evaluate_builtin_policy
 from agentops_guard.backend.services.scanner import scan_content
-from tests.agent_test.attack_cases import AttackCase, get_attack_cases, get_benign_cases
+from .attack_cases import AttackCase, get_attack_cases, get_benign_cases
 
 
 class TestScannerDetection:

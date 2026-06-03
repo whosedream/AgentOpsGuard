@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from agentops_guard.backend.main import app
-from tests.agent_test.attack_cases import ATTACK_CASES
+from .attack_cases import ATTACK_CASES
 
 client = TestClient(app)
 HEADERS = {"X-AgentOps-Api-Key": "dev-agentops-key"}
@@ -130,7 +130,7 @@ def _run_report() -> dict:
     from agentops_guard.backend.schemas import PolicyContext, ScanRequest
     from agentops_guard.backend.services.policy import evaluate_builtin_policy
     from agentops_guard.backend.services.scanner import scan_content
-    from tests.agent_test.attack_cases import get_attack_cases, get_benign_cases
+    from .attack_cases import get_attack_cases, get_benign_cases
 
     attacks = get_attack_cases()
     benigns = get_benign_cases()
