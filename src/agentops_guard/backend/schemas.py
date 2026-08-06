@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -17,6 +17,8 @@ EventType = Literal[
     "error",
     "run_completed",
 ]
+
+RoleType = Literal["admin", "security_reviewer", "developer", "read_only"]
 
 
 class Actor(BaseModel):
@@ -198,8 +200,69 @@ class ScanResponse(BaseModel):
     severity: str
 
 
+class OrganizationCreate(BaseModel):
+    name: str
+    slug: str | None = None
+    initial_admin: dict[str, str]
+    initial_project: dict[str, str] | None = None
+
+
+class OrganizationOut(BaseModel):
+    id: str
+    slug: str
+    name: str
+    created_at: datetime
+    initial_project_id: str | None = None
+
+
+class UserOut(BaseModel):
+    id: str
+    email: str
+    display_name: str
+    auth_provider: str
+    status: str
+    created_at: datetime
+
+
+class MembershipCreate(BaseModel):
+    email: str
+    display_name: str
+    role: RoleType
+
+
+class MembershipUpdate(BaseModel):
+    role: RoleType | None = None
+    status: Literal["active", "disabled"] | None = None
+
+
+class MembershipOut(BaseModel):
+    id: str
+    organization_id: str
+    user_id: str
+    role: RoleType
+    status: str
+    created_at: datetime
+    user: UserOut
+
+
+class DevLoginRequest(BaseModel):
+    email: str
+    display_name: str
+    role: RoleType = "admin"
+    organization_id: str | None = None
+    organization_name: str | None = None
+
+
+class DevLoginOut(BaseModel):
+    session_id: str
+    user: UserOut
+    membership: MembershipOut
+    project_id: str | None = None
+
+
 class ProjectCreate(BaseModel):
     id: str
+    organization_id: str | None = None
     name: str | None = None
     store_raw_content: bool = False
     retention_days: int = 30
@@ -219,6 +282,7 @@ class ProjectUpdate(BaseModel):
 
 class ProjectOut(BaseModel):
     id: str
+    organization_id: str
     name: str
     store_raw_content: bool
     retention_days: int
@@ -372,8 +436,8 @@ class ControlPlaneStatusOut(BaseModel):
 class RiskEventOut(BaseModel):
     id: str
     project_id: str
-    run_id: str | None
     event_id: str | None
+    run_id: str | None
     risk_type: str
     severity: str
     score: float
@@ -523,8 +587,26 @@ class AuditLogOut(BaseModel):
     created_at: datetime
 
 
+class MembershipSummaryOut(BaseModel):
+    id: str
+    organization_id: str
+    role: RoleType
+    status: str
+
+
+class AuthContextUserOut(BaseModel):
+    id: str
+    email: str
+    display_name: str
+
+
 class AuthContextOut(BaseModel):
     kind: str
+    user: AuthContextUserOut | None = None
+    organization_id: str | None = None
+    memberships: list[MembershipSummaryOut] = Field(default_factory=list)
+    active_membership_id: str | None = None
+    active_role: str | None = None
     project_id: str | None = None
     scopes: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)

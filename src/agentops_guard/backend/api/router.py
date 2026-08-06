@@ -4,9 +4,11 @@ from agentops_guard.backend.api import routes_admin, routes_control_plane, route
 
 
 router = APIRouter(prefix="/v1")
+public_router = APIRouter(prefix="/v1")
 ops_router = APIRouter()
 
 ops_router.include_router(routes_observability.router)
+public_router.include_router(routes_admin.public_v1_router)
 for module in (
     routes_observability,
     routes_runs,

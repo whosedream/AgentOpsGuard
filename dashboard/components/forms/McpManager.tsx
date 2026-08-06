@@ -1,26 +1,29 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiDelete, apiGet, apiPatch, apiPost, AuthContext, canManageMcp, gatewayGet, gatewayPost, Job, McpServer, McpTool, pollJob } from "../../lib/api";
+
+import { apiDelete, apiGet, apiPatch, apiPost, gatewayGet, gatewayPost, Job, McpServer, McpTool, pollJob } from "../../lib/api";
+import { canManageMcp, canTestMcp } from "../../lib/auth";
 import { mcpStatusTone, mcpToolRiskLabels } from "../../lib/payloads";
+import { useDashboardAuth } from "../auth/AuthProvider";
 import { ErrorState, LoadingState } from "../ui/States";
 
 export function McpManager() {
+  const auth = useDashboardAuth();
   const [servers, setServers] = useState<McpServer[]>([]);
   const [tools, setTools] = useState<McpTool[]>([]);
   const [name, setName] = useState("local_files");
   const [toolResult, setToolResult] = useState("");
   const [job, setJob] = useState<Job | null>(null);
-  const [auth, setAuth] = useState<AuthContext | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function loadServers() {
-    setServers(await apiGet<McpServer[]>("/v1/mcp/servers").catch(() => []));
+    setServers(await apiGet<McpServer[]>(`/v1/mcp/servers?project_id=${encodeURIComponent(auth.project_id ?? "default")}`).catch(() => []));
   }
 
   async function loadCachedTools() {
-    setTools(await apiGet<McpTool[]>("/v1/mcp/tools").catch(() => []));
+    setTools(await apiGet<McpTool[]>(`/v1/mcp/tools?project_id=${encodeURIComponent(auth.project_id ?? "default")}`).catch(() => []));
   }
 
   async function refreshTools() {
@@ -50,7 +53,14 @@ export function McpManager() {
   }
 
   async function createServer() {
-    const created = await apiPost<McpServer>("/v1/mcp/servers", { id: name, name, transport: "stdio", trust_level: "internal", allowed_agents: [] });
+    const created = await apiPost<McpServer>("/v1/mcp/servers", {
+      id: name,
+      name,
+      project_id: auth.project_id ?? "default",
+      transport: "stdio",
+      trust_level: "internal",
+      allowed_agents: [],
+    });
     setServers([created, ...servers.filter((server) => server.id !== created.id)]);
   }
 
@@ -72,6 +82,7 @@ export function McpManager() {
   }
 
   async function testTool() {
+    if (!canTestMcp(auth)) return;
     const tool = tools[0] ?? { name: "local_files.echo", serverId: "local_files" };
     const serverId = tool.serverId ?? tool.server_id ?? "local_files";
     const result = await gatewayPost<Record<string, unknown>>("/mcp/tools/call", { serverId, name: tool.name, arguments: { text: "hello" } });
@@ -79,12 +90,12 @@ export function McpManager() {
   }
 
   useEffect(() => {
-    apiGet<AuthContext>("/v1/auth/context").then(setAuth).catch(() => null);
     loadServers();
     loadCachedTools();
-  }, []);
+  }, [auth.project_id]);
 
-  const canManage = auth ? canManageMcp(auth) : false;
+  const canManage = canManageMcp(auth);
+  const canTest = canTestMcp(auth);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[0.8fr_1fr]">
@@ -94,7 +105,7 @@ export function McpManager() {
         <div className="mt-4 flex flex-wrap gap-3">
           <button onClick={createServer} disabled={!canManage} className="rounded-xl border border-cyan-300/30 px-4 py-2 text-cyan-200 disabled:opacity-50">Create server</button>
           <button onClick={refreshTools} disabled={!canManage} className="rounded-xl bg-cyan-300 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50">Refresh tools</button>
-          <button onClick={testTool} className="rounded-xl border border-white/10 px-4 py-2">Test tool</button>
+          <button onClick={testTool} disabled={!canTest} className="rounded-xl border border-white/10 px-4 py-2 disabled:opacity-50">Test tool</button>
         </div>
         <div className="mt-5 space-y-2">
           {servers.map((server) => (

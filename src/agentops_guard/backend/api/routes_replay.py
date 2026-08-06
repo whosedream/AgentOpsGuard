@@ -17,7 +17,7 @@ v1_router = APIRouter()
 
 @v1_router.get("/replays", response_model=list[ReplayOut] | PageOut)
 def list_replays(project_id: str = "default", source_run_id: str | None = None, limit: int = Query(default=50, le=200), cursor: str | None = None, page_mode: str | None = None, auth: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)) -> list[ReplayOut] | PageOut:
-    authorize_project_access(auth, project_id)
+    authorize_project_access(auth, project_id, db=db)
     offset = int(cursor or 0)
     query = db.query(ReplayRun).filter(ReplayRun.project_id == project_id)
     if source_run_id:
@@ -29,7 +29,7 @@ def list_replays(project_id: str = "default", source_run_id: str | None = None, 
 
 @v1_router.post("/replays/jobs", response_model=JobOut)
 def enqueue_replay(payload: ReplayCreate, request: Request, db: Session = Depends(get_db)) -> JobOut:
-    authorize_project_access(get_auth_context(request), payload.project_id)
+    authorize_project_access(get_auth_context(request), payload.project_id, db=db)
     ensure_project(db, payload.project_id)
     row = create_job(db, payload.project_id, "replay", payload.model_dump())
     try:
@@ -44,7 +44,7 @@ def enqueue_replay(payload: ReplayCreate, request: Request, db: Session = Depend
 
 @v1_router.post("/replays", response_model=ReplayOut)
 def replay(payload: ReplayCreate, request: Request, db: Session = Depends(get_db)) -> ReplayOut:
-    authorize_project_access(get_auth_context(request), payload.project_id)
+    authorize_project_access(get_auth_context(request), payload.project_id, db=db)
     result = create_replay(db, payload)
     db.commit()
     return result
@@ -55,5 +55,5 @@ def get_replay(replay_id: str, request: Request, db: Session = Depends(get_db)) 
     row = db.get(ReplayRun, replay_id)
     if not row:
         raise HTTPException(404, "Replay not found")
-    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True, db=db)
     return replay_out(row)

@@ -14,7 +14,7 @@ v1_router = APIRouter()
 
 @v1_router.get("/jobs", response_model=list[JobOut] | PageOut, dependencies=[Depends(require_scope("jobs:read"))])
 def list_jobs(project_id: str = "default", kind: str | None = None, limit: int = Query(default=50, le=200), cursor: str | None = None, page_mode: str | None = None, auth: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)) -> list[JobOut] | PageOut:
-    authorize_project_access(auth, project_id)
+    authorize_project_access(auth, project_id, db=db)
     offset = int(cursor or 0)
     query = db.query(BackgroundJob).filter(BackgroundJob.project_id == project_id)
     if kind:
@@ -29,5 +29,5 @@ def get_job(job_id: str, request: Request, db: Session = Depends(get_db)) -> Job
     row = db.get(BackgroundJob, job_id)
     if not row:
         raise HTTPException(404, "Job not found")
-    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True, db=db)
     return job_out(row)

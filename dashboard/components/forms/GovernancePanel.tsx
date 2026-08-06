@@ -1,27 +1,28 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+
 import {
-  AuthContext,
   apiGet,
   apiPatch,
   apiPost,
   ApprovalRequest,
-  canManageGovernance,
   ControlPlaneStatus,
   pageItems,
   PolicyPack,
   ScanRule,
 } from "../../lib/api";
+import { canManageGovernance, canReviewApprovals } from "../../lib/auth";
+import { useDashboardAuth } from "../auth/AuthProvider";
 import { EmptyState, ErrorState, LoadingState } from "../ui/States";
 
 export function GovernancePanel() {
-  const [projectId, setProjectId] = useState("default");
+  const auth = useDashboardAuth();
+  const [projectId, setProjectId] = useState(auth.project_id ?? "default");
   const [status, setStatus] = useState<ControlPlaneStatus | null>(null);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [packs, setPacks] = useState<PolicyPack[]>([]);
   const [rules, setRules] = useState<ScanRule[]>([]);
-  const [auth, setAuth] = useState<AuthContext | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -34,19 +35,16 @@ export function GovernancePanel() {
     setLoading(true);
     setError(null);
     try {
-      const [authContext, control, approvalPage, packPage, rulePage] = await Promise.all([
-        apiGet<AuthContext>("/v1/auth/context"),
+      const [control, approvalPage, packPage, rulePage] = await Promise.all([
         apiGet<ControlPlaneStatus>(`/v1/control-plane/status?project_id=${encodeURIComponent(targetProject)}`),
         apiGet<ApprovalRequest[] | { items: ApprovalRequest[] }>(`/v1/approvals?project_id=${encodeURIComponent(targetProject)}&status=pending&page_mode=envelope`),
         apiGet<PolicyPack[] | { items: PolicyPack[] }>(`/v1/policy-packs?project_id=${encodeURIComponent(targetProject)}&page_mode=envelope`),
         apiGet<ScanRule[] | { items: ScanRule[] }>(`/v1/scanner/rules?project_id=${encodeURIComponent(targetProject)}&page_mode=envelope`),
       ]);
-      setAuth(authContext);
       setStatus(control);
-      const system = control;
-      setRetentionDays(String(system.project.retention_days));
-      setStoreRaw(system.project.store_raw_content);
-      setPolicyFailMode(system.project.policy_fail_mode);
+      setRetentionDays(String(control.project.retention_days));
+      setStoreRaw(control.project.store_raw_content);
+      setPolicyFailMode(control.project.policy_fail_mode);
       setApprovals(pageItems(approvalPage));
       setPacks(pageItems(packPage));
       setRules(pageItems(rulePage));
@@ -58,11 +56,16 @@ export function GovernancePanel() {
   }
 
   useEffect(() => {
-    load("default");
-  }, []);
+    setProjectId(auth.project_id ?? "default");
+  }, [auth.project_id]);
+
+  useEffect(() => {
+    load(projectId);
+  }, [projectId]);
 
   const runStatuses = useMemo(() => Object.entries(status?.run_statuses ?? {}), [status]);
-  const canManage = auth ? canManageGovernance(auth) : false;
+  const canManage = canManageGovernance(auth);
+  const canReview = canReviewApprovals(auth);
 
   async function saveProject() {
     setSaving(true);
@@ -211,8 +214,8 @@ export function GovernancePanel() {
                 <div className="font-semibold text-white">{item.reason_code}</div>
                 <div className="mt-1 text-slate-400">{item.run_id ?? "no run"} · {item.severity}</div>
                 <div className="mt-3 flex gap-2">
-                  <button onClick={() => reviewApproval(item.id, "approved")} disabled={!canManage} className="rounded-lg bg-emerald-300 px-3 py-1 text-slate-950 disabled:opacity-50">Approve</button>
-                  <button onClick={() => reviewApproval(item.id, "denied")} disabled={!canManage} className="rounded-lg bg-rose-300 px-3 py-1 text-slate-950 disabled:opacity-50">Deny</button>
+                  <button onClick={() => reviewApproval(item.id, "approved")} disabled={!canReview} className="rounded-lg bg-emerald-300 px-3 py-1 text-slate-950 disabled:opacity-50">Approve</button>
+                  <button onClick={() => reviewApproval(item.id, "denied")} disabled={!canReview} className="rounded-lg bg-rose-300 px-3 py-1 text-slate-950 disabled:opacity-50">Deny</button>
                 </div>
               </div>
             )) : <EmptyState label="No pending approvals" />}

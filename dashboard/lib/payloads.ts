@@ -1,4 +1,5 @@
-﻿export type PolicyForm = {
+export type PolicyForm = {
+  projectId: string;
   agentId: string;
   toolName: string;
   command: string;
@@ -15,6 +16,7 @@ export function parseLabels(value: string): string[] {
 export function buildPolicyPayload(form: PolicyForm) {
   const labels = parseLabels(form.riskLabels);
   return {
+    project_id: form.projectId,
     actor: { agent_id: form.agentId || undefined },
     tool: { name: form.toolName, command: form.command, args: { command: form.command } },
     risk_labels: labels,

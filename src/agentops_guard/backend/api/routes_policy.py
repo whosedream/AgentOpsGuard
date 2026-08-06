@@ -15,7 +15,7 @@ v1_router = APIRouter()
 
 @v1_router.post("/policies/evaluate", response_model=PolicyDecisionOut)
 def evaluate(payload: PolicyContext, request: Request, db: Session = Depends(get_db)) -> PolicyDecisionOut:
-    authorize_project_access(get_auth_context(request), payload.project_id)
+    authorize_project_access(get_auth_context(request), payload.project_id, db=db)
     ensure_project(db, payload.project_id)
     decision = persist_policy_decision(db, evaluate_policy(payload, db), payload)
     db.commit()
@@ -24,7 +24,7 @@ def evaluate(payload: PolicyContext, request: Request, db: Session = Depends(get
 
 @v1_router.get("/policies/decisions", response_model=list[PolicyDecisionOut])
 def list_policy_decisions(project_id: str = "default", limit: int = Query(default=50, le=200), auth: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)) -> list[PolicyDecisionOut]:
-    authorize_project_access(auth, project_id)
+    authorize_project_access(auth, project_id, db=db)
     rows = db.query(PolicyDecision).filter(PolicyDecision.project_id == project_id).order_by(PolicyDecision.created_at.desc()).limit(limit).all()
     return [PolicyDecisionOut(id=row.id, action=row.action, reason_code=row.reason_code, severity=row.severity, matched_policy=row.matched_policy, remediation=row.remediation, context=row.context or {}) for row in rows]
 
@@ -36,7 +36,7 @@ def reload_policies() -> dict[str, str]:
 
 @v1_router.post("/scanner/scan", response_model=ScanResponse)
 def scan(payload: ScanRequest, request: Request, db: Session = Depends(get_db)) -> ScanResponse:
-    authorize_project_access(get_auth_context(request), payload.project_id)
+    authorize_project_access(get_auth_context(request), payload.project_id, db=db)
     ensure_project(db, payload.project_id)
     response = scan_content(payload, db)
     db.commit()

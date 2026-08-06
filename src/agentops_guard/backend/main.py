@@ -7,7 +7,7 @@ from agentops_guard.backend.auth import require_api_key
 from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.database import init_db
 from agentops_guard.backend.observability import RequestContextMiddleware
-from agentops_guard.backend.routes import ops_router, router
+from agentops_guard.backend.routes import ops_router, public_router, router
 
 
 @asynccontextmanager
@@ -33,6 +33,7 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(RequestContextMiddleware)
     app.include_router(ops_router)
+    app.include_router(public_router)
     app.include_router(router, dependencies=[Depends(require_api_key)])
     return app
 
