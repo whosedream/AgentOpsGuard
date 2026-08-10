@@ -12,4 +12,7 @@ node_modules/
 dist/
 build/
 .coverage
+artifacts/
+large_scale_test_report.txt
+large_scale_test_results.json
 .omc/

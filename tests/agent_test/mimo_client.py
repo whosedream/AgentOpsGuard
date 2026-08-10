@@ -63,8 +63,9 @@ class MiMoClient:
             "max_completion_tokens": self.config.max_tokens,
             "temperature": self.config.temperature,
             "stream": False,
-            "extra_body": {"thinking": {"type": "disabled"}},
         }
+        if self.config.base_url and "mmkg.cloud" in self.config.base_url:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         if tools:
             kwargs["tools"] = tools
 

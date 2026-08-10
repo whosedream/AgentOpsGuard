@@ -2,6 +2,18 @@
 
 The MCP Gateway exposes governed MCP-style endpoints while the backend API stores server registry and cached tool metadata.
 
+## Current Security Boundary
+
+The data-plane `/mcp/*` routes do not authenticate callers. Bind the Gateway to loopback or a
+trusted private network, or place an authenticated proxy in front of it. `project_id` and
+`agentId` are caller-supplied routing/policy fields, not verified identities. Backend registry API
+authentication does not protect the separate Gateway port.
+
+`require_approval` stops the upstream call, creates a pending approval, and returns its ID. An
+approval-resume/idempotency protocol is not implemented yet, so approval does not currently grant
+a retry permission. Refresh tool metadata before use; calls to an uncached tool are not yet
+rejected solely because the cache entry is missing.
+
 ## Register a Server
 
 Use the backend registry API:
@@ -70,10 +82,14 @@ Allowed server statuses are `active`, `quarantined`, `disabled`, and `error`. Ma
 
 Tool calls pass through scanner and policy checks:
 
-1. Gateway reads server and cached tool metadata.
-2. Pre-call policy blocks quarantined tools or disallowed agents.
-3. Upstream output is scanned before returning to the caller.
-4. High-risk output can be redacted, denied, or quarantined according to policy.
+1. Gateway resolves an active server within the requested project and reads cached tool metadata.
+2. Structured tool arguments are scanned before policy evaluation; raw arguments are not stored in
+   the policy-decision context.
+3. Any non-allow pre-call action stops the upstream call. `require_approval` also creates a pending
+   approval request.
+4. Upstream output is scanned before returning to the caller. Explicit post-policy `allow`,
+   `redact`, and blocking actions are applied separately.
+5. Upstream error responses retain the pre-call decision and create an audit event.
 
 ## Troubleshooting
 

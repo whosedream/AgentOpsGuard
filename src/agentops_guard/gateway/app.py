@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -10,9 +11,10 @@ from sqlalchemy.orm import Session
 
 from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.database import get_db, init_db
-from agentops_guard.backend.models import McpServer, McpTool
+from agentops_guard.backend.models import ApprovalRequest, McpServer, McpTool
 from agentops_guard.backend.schemas import PolicyContext, ScanRequest
-from agentops_guard.backend.services.policy import evaluate_policy
+from agentops_guard.backend.services.audit import record_audit
+from agentops_guard.backend.services.policy import evaluate_policy, persist_policy_decision
 from agentops_guard.backend.services.projects import ensure_project
 from agentops_guard.backend.services.scanner import scan_content
 from agentops_guard.gateway.transports import StreamableHttpTransport
@@ -67,47 +69,141 @@ def tools_call(payload: dict[str, Any], project_id: str = "default", db: Session
     arguments = payload.get("arguments", {})
     if not tool_name or not server_id:
         raise HTTPException(400, "name and serverId are required")
-    server = db.get(McpServer, server_id)
+    if not isinstance(arguments, dict):
+        raise HTTPException(400, "arguments must be an object")
+    server = (
+        db.query(McpServer)
+        .filter(
+            McpServer.id == server_id,
+            McpServer.project_id == project_id,
+            McpServer.status == "active",
+        )
+        .one_or_none()
+    )
     if not server:
         raise HTTPException(404, "MCP server not found")
-    tool = db.get(McpTool, f"{server_id}:{tool_name}")
-    decision = evaluate_policy(
-        PolicyContext(
-            project_id=project_id,
-            actor={"agent_id": payload.get("agentId")},
-            tool={
-                "name": tool_name,
-                "server_id": server_id,
-                "status": tool.status if tool else "active",
-                "allowed_agents": server.allowed_agents or [],
-                "args": arguments,
-            },
+    tool = (
+        db.query(McpTool)
+        .filter(
+            McpTool.id == f"{server_id}:{tool_name}",
+            McpTool.project_id == project_id,
         )
+        .one_or_none()
     )
-    if decision.action in {"deny", "quarantine"}:
-        return _error_response(decision.reason_code, policy_decision=decision.model_dump())
+    argument_scan = scan_content(
+        ScanRequest(
+            project_id=project_id,
+            content=json.dumps(arguments, ensure_ascii=False, sort_keys=True),
+            source="mcp_tool_arguments",
+        ),
+        db,
+    )
+    context = PolicyContext(
+        project_id=project_id,
+        actor={"agent_id": payload.get("agentId")},
+        tool={
+            "name": tool_name,
+            "server_id": server_id,
+            "status": tool.status if tool else "active",
+            "allowed_agents": server.allowed_agents or [],
+            "args": arguments,
+        },
+        risk_score=argument_scan.risk_score,
+        risk_labels=argument_scan.risk_labels,
+        data={"labels": argument_scan.risk_labels},
+    )
+    audit_context = context.model_copy(
+        update={
+            "tool": {
+                **context.tool,
+                "args": {"sanitized_content_ref": argument_scan.sanitized_content_ref},
+            }
+        }
+    )
+    evaluated = evaluate_policy(context, db)
+    evaluated = evaluated.model_copy(
+        update={
+            "context": {
+                **evaluated.context,
+                "tool": audit_context.tool,
+            }
+        }
+    )
+    decision = persist_policy_decision(db, evaluated, audit_context)
+    approval_request_id = None
+    if decision.action == "require_approval":
+        approval_request_id = (
+            db.query(ApprovalRequest.id)
+            .filter(ApprovalRequest.decision_id == decision.id)
+            .scalar()
+        )
+    if decision.action != "allow":
+        db.commit()
+        return _error_response(
+            decision.reason_code,
+            policy_decision=decision.model_dump(),
+            risk=argument_scan.model_dump(),
+            approval_request_id=approval_request_id,
+        )
+    db.commit()
     result = _call_upstream_tool(server, tool_name, arguments)
     if result.get("isError"):
-        return result
+        record_audit(
+            db,
+            project_id=project_id,
+            action="mcp_tool.upstream_error",
+            resource_type="mcp_tool",
+            resource_id=f"{server_id}:{tool_name}",
+            actor_type="agent",
+            actor_id=payload.get("agentId"),
+            after={"is_error": True},
+            metadata={"policy_decision_id": decision.id},
+        )
+        db.commit()
+        return {
+            **result,
+            "policyDecision": decision.model_dump(),
+            "risk": argument_scan.model_dump(),
+        }
     text = _result_text(result)
     scan = scan_content(ScanRequest(project_id=project_id, content=text, source="mcp_tool_result"), db)
-    if scan.risk_score >= 0.7:
-        post_decision = evaluate_policy(
-            PolicyContext(
-                project_id=project_id,
-                actor={"agent_id": payload.get("agentId")},
-                tool={"name": tool_name, "server_id": server_id},
-                risk_score=scan.risk_score,
-                risk_labels=scan.risk_labels,
-                data={"labels": scan.risk_labels},
-            )
+    sanitization_changed = scan.sanitized_text != text
+    if scan.risk_score >= 0.4 or sanitization_changed:
+        post_context = PolicyContext(
+            project_id=project_id,
+            actor={"agent_id": payload.get("agentId")},
+            tool={"name": tool_name, "server_id": server_id},
+            risk_score=max(scan.risk_score, 0.4 if sanitization_changed else 0.0),
+            risk_labels=scan.risk_labels,
+            data={"labels": scan.risk_labels},
+            metadata={"sanitization_changed": sanitization_changed},
         )
-        if post_decision.action in {"deny", "quarantine"}:
+        post_decision = persist_policy_decision(
+            db,
+            evaluate_policy(post_context, db),
+            post_context,
+        )
+        if post_decision.action == "allow":
             db.commit()
-            return _error_response(scan.sanitized_text, policy_decision=post_decision.model_dump(), risk=scan.model_dump())
+            return {
+                **result,
+                "risk": scan.model_dump(),
+                "policyDecision": post_decision.model_dump(),
+            }
+        if post_decision.action != "redact":
+            db.commit()
+            return _error_response(
+                post_decision.reason_code,
+                policy_decision=post_decision.model_dump(),
+                risk=scan.model_dump(),
+            )
+        db.commit()
+        return {
+            "content": [{"type": "text", "text": scan.sanitized_text}],
+            "risk": scan.model_dump(),
+            "policyDecision": post_decision.model_dump(),
+        }
     db.commit()
-    if decision.action == "redact" or scan.risk_score >= 0.4:
-        return {"content": [{"type": "text", "text": scan.sanitized_text}], "risk": scan.model_dump(), "policyDecision": decision.model_dump()}
     return {**result, "risk": scan.model_dump(), "policyDecision": decision.model_dump()}
 
 
@@ -252,13 +348,21 @@ def _call_upstream_tool(server: McpServer, tool_name: str, arguments: dict[str, 
     return {"content": [{"type": "text", "text": str(arguments.get("text", arguments))}]}
 
 
-def _error_response(message: str, *, policy_decision: dict[str, Any] | None = None, risk: dict[str, Any] | None = None, upstream_error: dict[str, Any] | None = None) -> dict[str, Any]:
+def _error_response(
+    message: str,
+    *,
+    policy_decision: dict[str, Any] | None = None,
+    risk: dict[str, Any] | None = None,
+    upstream_error: dict[str, Any] | None = None,
+    approval_request_id: str | None = None,
+) -> dict[str, Any]:
     return {
         "isError": True,
         "content": [{"type": "text", "text": message}],
         "policyDecision": policy_decision,
         "risk": risk,
         "upstreamError": upstream_error,
+        "approvalRequestId": approval_request_id,
     }
 
 

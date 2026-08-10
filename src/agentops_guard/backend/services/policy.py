@@ -36,6 +36,7 @@ EXFILTRATION_LABELS = {
     "sensitive_data_exfiltration",
     "openai_api_key",
     "anthropic_api_key",
+    "aws_access_key",
     "jwt",
     "ssh_private_key",
     "db_url",

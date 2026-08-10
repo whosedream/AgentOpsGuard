@@ -9,7 +9,13 @@ from sqlalchemy.orm import Session
 from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.models import RiskEvent, ScanRule
 from agentops_guard.backend.schemas import ContentIn, EvidenceSpan, ScanRequest, ScanResponse
-from agentops_guard.backend.services.content import new_id, persist_content, redact_text
+from agentops_guard.backend.services.content import (
+    SECRET_PATTERNS,
+    detect_secret_labels,
+    new_id,
+    persist_content,
+    redact_text,
+)
 
 
 @dataclass(frozen=True)
@@ -31,21 +37,45 @@ class ScannerFinding:
 
 
 class ScannerProvider:
-    def scan(self, request: ScanRequest, texts: list[tuple[str, int]], db: Session | None = None) -> list[ScannerFinding]:
+    def scan(
+        self,
+        request: ScanRequest,
+        texts: list[tuple[str, int]],
+        db: Session | None = None,
+    ) -> list[ScannerFinding]:
         raise NotImplementedError
 
 
 class RegexScannerProvider(ScannerProvider):
-    def __init__(self, rules: list[ScannerRule]) -> None:
+    def __init__(
+        self,
+        rules: list[ScannerRule],
+        decoded_spans: list[tuple[int, int]] | None = None,
+    ) -> None:
         self.rules = rules
+        self.decoded_spans = decoded_spans or []
 
-    def scan(self, request: ScanRequest, texts: list[tuple[str, int]], db: Session | None = None) -> list[ScannerFinding]:
+    def scan(
+        self,
+        request: ScanRequest,
+        texts: list[tuple[str, int]],
+        db: Session | None = None,
+    ) -> list[ScannerFinding]:
         findings: list[ScannerFinding] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, int, int]] = set()
+        decoded_index = 0
         for text, offset_base in texts:
+            source_span = None
+            if offset_base < 0:
+                source_span = self.decoded_spans[decoded_index]
+                decoded_index += 1
             for rule in self.rules:
                 for match in rule.pattern.finditer(text):
-                    identity = (rule.label, match.group(0))
+                    start, end = source_span or (
+                        match.start() + offset_base,
+                        match.end() + offset_base,
+                    )
+                    identity = (rule.label, start, end)
                     if identity in seen:
                         continue
                     seen.add(identity)
@@ -54,12 +84,15 @@ class RegexScannerProvider(ScannerProvider):
                             label=rule.label,
                             severity=rule.severity,
                             score=rule.score,
-                            start=match.start() if offset_base >= 0 else 0,
-                            end=match.end() if offset_base >= 0 else min(len(request.content), 80),
-                            snippet=match.group(0)[:160],
+                            start=start,
+                            end=end,
+                            snippet=(
+                                "[REDACTED:base64_obfuscation]"
+                                if source_span is not None
+                                else match.group(0)[:160]
+                            ),
                         )
                     )
-                    break
         return findings
 
 
@@ -82,16 +115,19 @@ def _max_severity(labels: list[str], severities: list[str]) -> str:
     return max(severities, key=lambda item: SEVERITY_ORDER[item])
 
 
-def _decode_base64_candidates(content: str) -> list[str]:
-    candidates = re.findall(r"[A-Za-z0-9+/=]{32,}", content)
-    decoded: list[str] = []
-    for candidate in candidates[:10]:
+def _decode_base64_candidates(content: str) -> list[tuple[str, int, int]]:
+    decoded: list[tuple[str, int, int]] = []
+    for match in list(re.finditer(r"[A-Za-z0-9+/=]{32,}", content))[:10]:
+        candidate = match.group(0)
         try:
             value = base64.b64decode(candidate, validate=True).decode("utf-8", errors="ignore")
         except (binascii.Error, ValueError):
             continue
-        if any(term in value.lower() for term in ("ignore", "secret", "token", "instruction")):
-            decoded.append(value)
+        secret_labels = set(detect_secret_labels(value)) - {"email", "phone"}
+        if any(
+            term in value.lower() for term in ("ignore", "secret", "token", "instruction")
+        ) or secret_labels:
+            decoded.append((value, match.start(), match.end()))
     return decoded
 
 
@@ -101,11 +137,13 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
     severities: list[str] = []
     score = 0.0
 
+    decoded_candidates = _decode_base64_candidates(request.content)
     texts = [(request.content, 0)]
-    for decoded in _decode_base64_candidates(request.content):
+    for decoded, start, end in decoded_candidates:
         texts.append((decoded, -1))
 
-    for provider in _providers(request.project_id, db):
+    decoded_spans = [(start, end) for _, start, end in decoded_candidates]
+    for provider in _providers(request.project_id, db, decoded_spans):
         try:
             findings = provider.scan(request, texts, db)
         except Exception:
@@ -115,14 +153,75 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
                 labels.append(finding.label)
             severities.append(finding.severity)
             score = max(score, finding.score)
-            evidence.append(EvidenceSpan(label=finding.label, start=finding.start, end=finding.end, snippet=finding.snippet))
+            evidence.append(
+                EvidenceSpan(
+                    label=finding.label,
+                    start=finding.start,
+                    end=finding.end,
+                    snippet=redact_text(finding.snippet) or "",
+                )
+            )
 
-    if any(text for text, offset in texts if offset == -1):
+    secret_evidence: set[tuple[str, int, int]] = set()
+    secret_texts = [(request.content, None)] + [
+        (decoded, (start, end)) for decoded, start, end in decoded_candidates
+    ]
+    for text, source_span in secret_texts:
+        for label, pattern in SECRET_PATTERNS:
+            if label in {"email", "phone"}:
+                continue
+            for match in pattern.finditer(text):
+                start, end = source_span or match.span()
+                identity = (label, start, end)
+                if identity in secret_evidence:
+                    continue
+                secret_evidence.add(identity)
+                if label not in labels:
+                    labels.append(label)
+                severities.append("critical")
+                score = max(score, 0.95)
+                evidence.append(
+                    EvidenceSpan(
+                        label=label,
+                        start=start,
+                        end=end,
+                        snippet=f"[REDACTED:{label}]",
+                    )
+                )
+
+    if decoded_candidates:
         labels.append("base64_obfuscation")
         severities.append("medium")
         score = max(score, 0.55)
+        evidence.extend(
+            EvidenceSpan(
+                label="base64_obfuscation",
+                start=start,
+                end=end,
+                snippet="[REDACTED:base64_obfuscation]",
+            )
+            for _, start, end in decoded_candidates
+        )
 
-    sanitized_text = redact_text(request.content) or ""
+    sanitized_text = request.content
+    merged_spans: list[tuple[int, int, set[str]]] = []
+    for finding in sorted(evidence, key=lambda item: item.start):
+        if merged_spans and finding.start <= merged_spans[-1][1]:
+            start, end, span_labels = merged_spans[-1]
+            merged_spans[-1] = (
+                start,
+                max(end, finding.end),
+                span_labels | {finding.label},
+            )
+        else:
+            merged_spans.append((finding.start, finding.end, {finding.label}))
+    for start, end, span_labels in reversed(merged_spans):
+        sanitized_text = (
+            sanitized_text[:start]
+            + f"[REDACTED:{','.join(sorted(span_labels))}]"
+            + sanitized_text[end:]
+        )
+    sanitized_text = redact_text(sanitized_text) or ""
     sanitized_ref = None
     if db is not None:
         sanitized_ref = persist_content(
@@ -171,8 +270,14 @@ def _active_rules(project_id: str, db: Session | None) -> list[ScannerRule]:
     return rules
 
 
-def _providers(project_id: str, db: Session | None) -> list[ScannerProvider]:
-    providers: list[ScannerProvider] = [RegexScannerProvider(_active_rules(project_id, db))]
+def _providers(
+    project_id: str,
+    db: Session | None,
+    decoded_spans: list[tuple[int, int]] | None = None,
+) -> list[ScannerProvider]:
+    providers: list[ScannerProvider] = [
+        RegexScannerProvider(_active_rules(project_id, db), decoded_spans)
+    ]
     for plugin in get_settings().scanner_plugins:
         provider = _load_plugin(plugin)
         if provider is not None:
