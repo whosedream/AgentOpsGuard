@@ -112,6 +112,9 @@ uv run python scripts/compose_smoke.py
 The compose stack starts API, Gateway, Worker, Redis, Postgres, and Dashboard.
 Production-style deployments should run `uv run alembic upgrade head` before API, Gateway, and Worker startup. The compose stack includes a one-shot migration service for this.
 
+For read-only Windows/WSL proxy and Docker connectivity checks, see
+`docs/wsl-network-diagnostics.md`. The diagnostic scripts never change daemon or proxy state.
+
 ## Helm
 
 ```powershell
