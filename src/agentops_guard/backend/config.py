@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     gateway_max_stderr_bytes: int = 4_096
     gateway_max_concurrency_per_server: int = 1
     scanner_plugins: list[str] = Field(default_factory=list)
+    credential_encryption_key: SecretStr | None = None
+
+    @field_validator("credential_encryption_key", mode="before")
+    @classmethod
+    def _empty_credential_encryption_key_is_unset(cls, value: object) -> object:
+        if value == "":
+            return None
+        return value
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod

@@ -251,6 +251,30 @@ class ApiKey(Base):
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ServiceCredential(Base):
+    __tablename__ = "service_credentials"
+
+    credential_ref: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
+    binding_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    tool: Mapped[str] = mapped_column(String(128), nullable=False)
+    origin: Mapped[str] = mapped_column(String(255), nullable=False)
+    injection_field: Mapped[str] = mapped_column(String(64), nullable=False)
+    credential_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    allowed_actor_ids: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    last_used_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 

@@ -1,7 +1,16 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+
+
+def _validate_outbound_secret(value: SecretStr) -> SecretStr:
+    raw_value = value.get_secret_value()
+    if not raw_value.isascii() or any(
+        ord(character) < 33 or ord(character) == 127 for character in raw_value
+    ):
+        raise ValueError("value must contain printable ASCII characters only")
+    return value
 
 
 EventType = Literal[
@@ -571,6 +580,47 @@ class ApiKeyOut(BaseModel):
 
 class ApiKeyCreateOut(ApiKeyOut):
     token: str
+
+
+class DeepSeekCredentialCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = "default"
+    name: str = Field(min_length=1, max_length=255)
+    secret: SecretStr = Field(min_length=1)
+    allowed_actor_ids: list[str] = Field(default_factory=list)
+
+    _printable_secret = field_validator("secret")(_validate_outbound_secret)
+
+
+class DeepSeekCredentialRotate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = "default"
+    secret: SecretStr = Field(min_length=1)
+
+    _printable_secret = field_validator("secret")(_validate_outbound_secret)
+
+
+class CredentialRefOut(BaseModel):
+    credential_ref: str
+
+
+class DeepSeekMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
+class DeepSeekChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = "default"
+    credential_ref: str
+    model: str = Field(min_length=1, max_length=128)
+    messages: list[DeepSeekMessage] = Field(min_length=1)
+    max_tokens: int | None = Field(default=None, ge=1)
 
 
 class AuditLogOut(BaseModel):

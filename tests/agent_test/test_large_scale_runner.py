@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from run_large_scale_test import TestResult as RunnerResult  # noqa: E402
-from run_large_scale_test import generate_report  # noqa: E402
+from run_large_scale_test import generate_report, main  # noqa: E402
 
 
 def result(case_id: str, *, is_attack: bool, action: str, scored: bool) -> RunnerResult:
@@ -39,3 +39,14 @@ def test_unreviewed_llm_candidates_are_excluded_from_scored_metrics():
     assert "LLM candidates (unreviewed): 1" in report
     action_section = report.split("POLICY ACTION DISTRIBUTION", maxsplit=1)[1]
     assert "  deny" not in action_section
+
+
+def test_llm_generation_is_disabled_in_the_synthetic_runner(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["run_large_scale_test.py", "--llm-count", "1"])
+
+    try:
+        main()
+    except SystemExit as exc:
+        assert "pinned public benchmark" in str(exc)
+    else:
+        raise AssertionError("LLM-generated candidates must remain disabled")

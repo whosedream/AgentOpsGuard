@@ -101,8 +101,29 @@ See `docs/sdk.md` for the Python SDK quickstart, trace/span usage, scanner/polic
 - `AGENTOPS_STORE_RAW_CONTENT`: Set to `true` only when full replay requires raw prompt/tool content.
 - `AGENTOPS_POLICY_FAIL_MODE`: Default `closed_for_high_risk`.
 - `AGENTOPS_SCANNER_PLUGINS`: Comma-separated `module:factory` scanner provider plugins.
+- `AGENTOPS_CREDENTIAL_ENCRYPTION_KEY`: Fernet master key for outbound service credentials. Load it from a dedicated secret store only into the API process; never print it or put it in a command argument.
+
+## DeepSeek credential boundary
+
+DeepSeek keys use a model-blind path: an administrator submits the key to
+`POST /v1/credentials/deepseek`, receives only an opaque `credential_ref`, and grants that
+reference to explicit authenticated actor IDs. Agents call
+`POST /v1/deepseek/chat/completions` with the reference; they cannot provide a URL, headers, or
+raw key. The trusted API process checks the project, actor, provider, fixed target, status, and
+version under a per-credential database lock, then the trusted transport decrypts and injects the
+key only into the final `Authorization` header for
+`https://api.deepseek.com/chat/completions`. Redirects are not followed.
+
+The built-in Fernet adapter protects against a database-only disclosure. It is not protection
+against compromise of the API process, host, or encryption-key store. Production Helm installs
+must put the key in a separate Kubernetes Secret and set
+`credentialEncryption.existingSecret`; that Secret is mounted only into the API deployment.
 
 ## Docker Compose
+
+The Compose credential-key setting is for local development only. Do not load production
+provider credentials into this stack. Production's concurrent revoke/rotate guarantee requires
+PostgreSQL row locks; SQLite is limited to single-process development and tests.
 
 ```powershell
 docker compose up --build

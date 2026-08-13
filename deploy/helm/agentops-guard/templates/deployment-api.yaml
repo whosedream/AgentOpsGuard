@@ -28,6 +28,14 @@ spec:
                 name: {{ include "agentops-guard.name" . }}-config
             - secretRef:
                 name: {{ include "agentops-guard.name" . }}-secret
+          {{- if .Values.credentialEncryption.existingSecret }}
+          env:
+            - name: AGENTOPS_CREDENTIAL_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentialEncryption.existingSecret | quote }}
+                  key: {{ .Values.credentialEncryption.key | quote }}
+          {{- end }}
           ports:
             - containerPort: 8000
           readinessProbe:

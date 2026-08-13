@@ -40,6 +40,8 @@ ROLE_CAPABILITIES: dict[str, list[str]] = {
         "scanner:admin",
         "jobs:read",
         "runs:admin",
+        "credentials:write",
+        "models:invoke",
     ],
     "security_reviewer": [
         "projects:read",
@@ -241,6 +243,17 @@ def revoke_session(db: Session, session_token: str) -> None:
 def authenticate_session(db: Session, session_token: str) -> AuthSession | None:
     row = db.query(AuthSession).filter(AuthSession.token_hash == hash_session_token(session_token)).first()
     if row is None or row.revoked_at is not None:
+        return None
+    membership = db.get(Membership, row.membership_id)
+    user = db.get(User, row.user_id)
+    if (
+        membership is None
+        or user is None
+        or membership.status != "active"
+        or user.status != "active"
+        or membership.user_id != row.user_id
+        or membership.organization_id != row.organization_id
+    ):
         return None
     expires_at = row.expires_at
     if expires_at.tzinfo is None:

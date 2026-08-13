@@ -54,3 +54,7 @@ env:
   AGENTOPS_SERVER_GATEWAY_URL: http://agentops-guard-gateway:8001
 
 extraEnv: {}
+
+credentialEncryption:
+  existingSecret: ""
+  key: AGENTOPS_CREDENTIAL_ENCRYPTION_KEY

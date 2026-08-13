@@ -11,24 +11,6 @@ os.environ.setdefault("AGENTOPS_ALLOW_SCHEMA_BOOTSTRAP", "true")
 
 
 @pytest.fixture
-def mimo_config():
-    """MiMo API configuration from environment."""
-    from .mimo_client import MiMoConfig
-    config = MiMoConfig()
-    config.api_key = os.environ.get("MIMO_API_KEY", config.api_key)
-    config.base_url = os.environ.get("MIMO_BASE_URL", config.base_url)
-    config.model = os.environ.get("MIMO_MODEL", config.model)
-    return config
-
-
-@pytest.fixture
-def mimo_client(mimo_config):
-    """MiMo API client instance."""
-    from .mimo_client import MiMoClient
-    return MiMoClient(mimo_config)
-
-
-@pytest.fixture
 def attack_cases():
     """All attack cases from the library."""
     from .attack_cases import ATTACK_CASES

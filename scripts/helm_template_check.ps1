@@ -21,7 +21,8 @@ if (Get-Command helm -ErrorAction SilentlyContinue) {
     $helmImage `
     template agentops-guard $chartPath `
     -f "$chartPath/values.yaml" `
-    -f "$chartPath/values.staging.yaml" > $null
+    -f "$chartPath/values.staging.yaml" `
+    --set credentialEncryption.existingSecret=agentops-credential-test > $null
   exit 0
 } else {
   throw "No Helm binary found. Install helm, place helm.exe at $localHelm, or set AGENTOPS_HELM_IMAGE."
@@ -30,4 +31,5 @@ if (Get-Command helm -ErrorAction SilentlyContinue) {
 & $helmCmd lint $chartPath
 & $helmCmd template agentops-guard $chartPath `
   -f "$chartPath/values.yaml" `
-  -f "$chartPath/values.staging.yaml" > $null
+  -f "$chartPath/values.staging.yaml" `
+  --set credentialEncryption.existingSecret=agentops-credential-test > $null
