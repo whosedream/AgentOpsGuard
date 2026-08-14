@@ -5,7 +5,10 @@ from sqlalchemy.orm import Session
 from agentops_guard.backend.models import McpServer, McpTool
 from agentops_guard.backend.schemas import ScanRequest
 from agentops_guard.backend.services.audit import record_audit
-from agentops_guard.backend.services.scanner import scan_content
+from agentops_guard.backend.services.scanner import (
+    scan_content,
+    should_quarantine_external_content,
+)
 from agentops_guard.gateway.app import _load_tools_from_server
 
 
@@ -28,7 +31,7 @@ def refresh_mcp_tools(db: Session, server_id: str) -> dict[str, object]:
                 ),
                 db,
             )
-            status = "quarantined" if scan.risk_score >= 0.7 else "active"
+            status = "quarantined" if should_quarantine_external_content(scan) else "active"
             quarantined = status == "quarantined"
             tool_id = f"{server.id}:{tool.get('name')}"
             row = db.get(McpTool, tool_id)

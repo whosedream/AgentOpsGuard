@@ -19,19 +19,21 @@ from agentops_guard.backend.schemas import (
     ScanResponse,
 )
 from agentops_guard.backend.services.audit import record_audit
-from agentops_guard.backend.services.policy import evaluate_policy, persist_policy_decision
+from agentops_guard.backend.services.policy import (
+    evaluate_builtin_policy,
+    evaluate_policy,
+    persist_policy_decision,
+)
 from agentops_guard.backend.services.projects import ensure_project
-from agentops_guard.backend.services.scanner import scan_content
+from agentops_guard.backend.services.scanner import (
+    EXTERNAL_CONTENT_QUARANTINE_LABELS,
+    scan_content,
+    should_quarantine_external_content,
+)
 from agentops_guard.gateway.transports import StreamableHttpTransport
 from agentops_guard.gateway.transports.stdio import get_stdio_manager
 
 router = APIRouter(prefix="/mcp")
-
-INSTRUCTION_OVERRIDE_LABELS = {
-    "instruction_override",
-    "system_prompt_override",
-}
-
 
 @router.get("/tools/list")
 def tools_list(project_id: str = "default", db: Session = Depends(get_db)) -> dict[str, Any]:
@@ -52,9 +54,10 @@ def tools_list(project_id: str = "default", db: Session = Depends(get_db)) -> di
                     project_id=project_id,
                     content=json.dumps(tool, ensure_ascii=False, sort_keys=True),
                     source="mcp_tool_description",
-                )
+                ),
+                db,
             )
-            status = "quarantined" if scan.risk_score >= 0.7 else "active"
+            status = "quarantined" if should_quarantine_external_content(scan) else "active"
             quarantined = status == "quarantined"
             visible_description = "" if quarantined else description
             visible_input_schema = {} if quarantined else input_schema
@@ -229,15 +232,20 @@ def tools_call(
                 "trust": "untrusted",
             },
         )
-        if _contains_instruction_override(scan.risk_labels):
-            evaluated_post = PolicyDecisionOut(
-                action="quarantine",
-                reason_code="external_instruction_override",
-                severity="critical",
-                matched_policy="external_content_boundary",
-                remediation="Remove instructions from external content before returning it to the agent.",
-                context=post_context.model_dump(),
-            )
+        if should_quarantine_external_content(scan):
+            if set(scan.risk_labels) & EXTERNAL_CONTENT_QUARANTINE_LABELS:
+                evaluated_post = PolicyDecisionOut(
+                    action="quarantine",
+                    reason_code="external_instruction_override",
+                    severity="critical",
+                    matched_policy="external_content_boundary",
+                    remediation=(
+                        "Remove instructions from external content before returning it to the agent."
+                    ),
+                    context=post_context.model_dump(),
+                )
+            else:
+                evaluated_post = evaluate_builtin_policy(post_context)
         else:
             evaluated_post = evaluate_policy(post_context, db)
         post_decision = persist_policy_decision(db, evaluated_post, post_context)
@@ -279,7 +287,7 @@ def resources_read(
         ScanRequest(project_id=project_id, content=content, source="mcp_resource"), db
     )
     db.commit()
-    if _contains_instruction_override(scan.risk_labels):
+    if should_quarantine_external_content(scan):
         return {
             "isError": True,
             "contents": [],
@@ -303,7 +311,7 @@ def prompts_get(
     prompt = payload.get("prompt", "")
     scan = scan_content(ScanRequest(project_id=project_id, content=prompt, source="mcp_prompt"), db)
     db.commit()
-    if _contains_instruction_override(scan.risk_labels):
+    if should_quarantine_external_content(scan):
         return {
             "isError": True,
             "messages": [],
@@ -471,12 +479,8 @@ def _result_text(value: Any) -> str:
     return str(value)
 
 
-def _contains_instruction_override(labels: list[str]) -> bool:
-    return bool(set(labels) & INSTRUCTION_OVERRIDE_LABELS)
-
-
 def _agent_visible_risk(scan: ScanResponse) -> dict[str, Any]:
-    if not _contains_instruction_override(scan.risk_labels):
+    if not should_quarantine_external_content(scan):
         return scan.model_dump()
     return scan.model_copy(
         update={

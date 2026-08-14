@@ -101,6 +101,21 @@ class RegexScannerProvider(ScannerProvider):
 
 TRUSTED_SOURCES = {"user_input"}
 
+EXTERNAL_CONTENT_QUARANTINE_LABELS = frozenset(
+    {
+        "hidden_html",
+        "instruction_override",
+        "system_prompt_override",
+    }
+)
+
+
+def should_quarantine_external_content(scan: ScanResponse) -> bool:
+    return bool(
+        set(scan.risk_labels) & EXTERNAL_CONTENT_QUARANTINE_LABELS
+        or scan.risk_score >= 0.7
+    )
+
 EXTERNAL_ACTION = (
     r"(?:update|add|send|adjust|create|submit|set|cancel|increase|reduce|"
     r"clear|change|flag|process|schedule|move|reschedule|place)"
