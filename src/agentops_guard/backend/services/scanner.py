@@ -24,6 +24,7 @@ class ScannerRule:
     pattern: re.Pattern[str]
     severity: str
     score: float
+    untrusted_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,8 @@ class RegexScannerProvider(ScannerProvider):
                 source_span = self.decoded_spans[decoded_index]
                 decoded_index += 1
             for rule in self.rules:
+                if rule.untrusted_only and request.source in TRUSTED_SOURCES:
+                    continue
                 for match in rule.pattern.finditer(text):
                     start, end = source_span or (
                         match.start() + offset_base,
@@ -96,14 +99,129 @@ class RegexScannerProvider(ScannerProvider):
         return findings
 
 
+TRUSTED_SOURCES = {"user_input"}
+
+EXTERNAL_ACTION = (
+    r"(?:update|add|send|adjust|create|submit|set|cancel|increase|reduce|"
+    r"clear|change|flag|process|schedule|move|reschedule|place)"
+)
+EXTERNAL_SEPARATOR = r"[\s,:;.!?-]{0,32}"
+
 RULES = [
-    ScannerRule("instruction_override", re.compile(r"ignore (?:all )?(?:previous|above|prior) instructions", re.I), "high", 0.75),
-    ScannerRule("system_prompt_override", re.compile(r"(?:you are now|act as|this is) (?:the )?(?:system|developer) (?:message|instruction)", re.I), "high", 0.75),
-    ScannerRule("credential_exfiltration", re.compile(r"(?:send|upload|post|exfiltrate|leak).{0,80}(?:secret|token|api key|password|credential|env|environment)", re.I), "critical", 0.95),
-    ScannerRule("tool_hijacking", re.compile(r"(?:call|use|invoke).{0,80}(?:shell|terminal|filesystem|database|slack|http|browser)", re.I), "medium", 0.55),
-    ScannerRule("data_exfiltration", re.compile(r"(?:send|post|upload).{0,120}(?:https?://|attacker|webhook|external)", re.I), "critical", 0.9),
-    ScannerRule("hidden_html", re.compile(r"(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|font-size\s*:\s*0)", re.I), "medium", 0.5),
-    ScannerRule("markdown_link_trap", re.compile(r"\[[^\]]*(?:ignore|secret|token|system)[^\]]*\]\([^)]*\)", re.I), "medium", 0.45),
+    ScannerRule(
+        "instruction_override",
+        re.compile(r"ignore (?:all )?(?:previous|above|prior) instructions", re.I),
+        "high",
+        0.75,
+    ),
+    ScannerRule(
+        "instruction_override",
+        re.compile(
+            r"\b(?:ignore|disregard|forget|override|skip|discard|bypass)\b"
+            r"\s+(?:all\s+)?(?:the\s+)?"
+            r"(?:previous|above|prior|earlier|preceding)\s+"
+            r"(?:instructions|directives|rules|guidelines|constraints|orders)\b",
+            re.I,
+        ),
+        "high",
+        0.8,
+        untrusted_only=True,
+    ),
+    ScannerRule(
+        "instruction_override",
+        re.compile(
+            r"\bpriority\s+message\b.{0,160}"
+            r"\bforgot\s+to\s+mention\s+earlier\b.{0,160}"
+            r"\bbefore\s+finishing\b.{0,160}"
+            r"\bplease\s+first\b"
+            + EXTERNAL_SEPARATOR
+            + EXTERNAL_ACTION
+            + r"\b(?=.{1,512}\bthen\s+continue\s+with\s+the\s+original\s+request\b)",
+            re.I | re.S,
+        ),
+        "high",
+        0.8,
+        untrusted_only=True,
+    ),
+    ScannerRule(
+        "instruction_override",
+        re.compile(
+            r"\burgent\b.{0,100}"
+            r"\bbefore\s+completing\s+any\s+other\s+tasks\b.{0,100}"
+            r"\byou\s+must\b"
+            + EXTERNAL_SEPARATOR
+            + EXTERNAL_ACTION
+            + r"\b(?=.{1,512}\bcritical\s+priority\b)",
+            re.I | re.S,
+        ),
+        "high",
+        0.8,
+        untrusted_only=True,
+    ),
+    ScannerRule(
+        "system_prompt_override",
+        re.compile(
+            r"(?:you are now|act as|this is) (?:the )?(?:system|developer) (?:message|instruction)",
+            re.I,
+        ),
+        "high",
+        0.75,
+    ),
+    ScannerRule(
+        "system_prompt_override",
+        re.compile(
+            r"\b(?:you\s+are\s+now\s+(?:(?:in\s+)?developer\s+mode|"
+            r"(?:the\s+)?system)|act\s+as\s+(?:the\s+)?developer\s+mode)\b"
+            r".{0,96}\b(?:reveal|show|output|display|share|expose)\b"
+            r".{0,64}\b(?:instructions|configuration|system\s+prompt|rules|"
+            r"directives|guidelines)\b",
+            re.I | re.S,
+        ),
+        "high",
+        0.8,
+        untrusted_only=True,
+    ),
+    ScannerRule(
+        "credential_exfiltration",
+        re.compile(
+            r"\b(?:send|upload|post|exfiltrate|leak|transmit|transfer|export)\b"
+            r".{0,80}\b(?:secret|token|(?:api|private|access)\s+key|password|"
+            r"credential|env|environment)\b",
+            re.I | re.S,
+        ),
+        "critical",
+        0.95,
+    ),
+    ScannerRule(
+        "tool_hijacking",
+        re.compile(
+            r"(?:call|use|invoke).{0,80}(?:shell|terminal|filesystem|database|slack|http|browser)",
+            re.I,
+        ),
+        "medium",
+        0.55,
+    ),
+    ScannerRule(
+        "data_exfiltration",
+        re.compile(r"(?:send|post|upload).{0,120}(?:https?://|attacker|webhook|external)", re.I),
+        "critical",
+        0.9,
+    ),
+    ScannerRule(
+        "hidden_html",
+        re.compile(
+            r"(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|font-size\s*:\s*0)",
+            re.I,
+        ),
+        "medium",
+        0.5,
+    ),
+    ScannerRule(
+        "markdown_link_trap",
+        re.compile(r"\[[^\]]*(?:ignore|secret|token|system)[^\]]*\]\([^)]*\)", re.I),
+        "medium",
+        0.45,
+    ),
 ]
 
 SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -124,9 +242,10 @@ def _decode_base64_candidates(content: str) -> list[tuple[str, int, int]]:
         except (binascii.Error, ValueError):
             continue
         secret_labels = set(detect_secret_labels(value)) - {"email", "phone"}
-        if any(
-            term in value.lower() for term in ("ignore", "secret", "token", "instruction")
-        ) or secret_labels:
+        if (
+            any(term in value.lower() for term in ("ignore", "secret", "token", "instruction"))
+            or secret_labels
+        ):
             decoded.append((value, match.start(), match.end()))
     return decoded
 
@@ -260,7 +379,11 @@ def _active_rules(project_id: str, db: Session | None) -> list[ScannerRule]:
     rules = list(RULES)
     if db is None:
         return rules
-    rows = db.query(ScanRule).filter(ScanRule.project_id == project_id, ScanRule.status == "enabled").all()
+    rows = (
+        db.query(ScanRule)
+        .filter(ScanRule.project_id == project_id, ScanRule.status == "enabled")
+        .all()
+    )
     for row in rows:
         try:
             pattern = re.compile(row.pattern, re.I)

@@ -81,3 +81,11 @@ def test_run_benchmark_separates_attack_recall_and_benign_false_positives():
     assert summary["matched_clean_false_positive_rate"] == 0
     assert summary["benign_prompt_false_positive_rate"] == 0
     assert summary["attack_policy_actions"] == {"require_approval": 1}
+    assert [
+        (result["sample_kind"], result["content_source"], result["trust"])
+        for result in report["results"]
+    ] == [
+        ("attack", "mcp_tool_result", "untrusted"),
+        ("matched_clean", "mcp_tool_result", "untrusted"),
+        ("benign_prompt", "user_input", "trusted"),
+    ]

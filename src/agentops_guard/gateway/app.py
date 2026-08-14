@@ -12,7 +12,12 @@ from sqlalchemy.orm import Session
 from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.database import get_db, init_db
 from agentops_guard.backend.models import ApprovalRequest, McpServer, McpTool
-from agentops_guard.backend.schemas import PolicyContext, ScanRequest
+from agentops_guard.backend.schemas import (
+    PolicyContext,
+    PolicyDecisionOut,
+    ScanRequest,
+    ScanResponse,
+)
 from agentops_guard.backend.services.audit import record_audit
 from agentops_guard.backend.services.policy import evaluate_policy, persist_policy_decision
 from agentops_guard.backend.services.projects import ensure_project
@@ -22,23 +27,44 @@ from agentops_guard.gateway.transports.stdio import get_stdio_manager
 
 router = APIRouter(prefix="/mcp")
 
+INSTRUCTION_OVERRIDE_LABELS = {
+    "instruction_override",
+    "system_prompt_override",
+}
+
 
 @router.get("/tools/list")
 def tools_list(project_id: str = "default", db: Session = Depends(get_db)) -> dict[str, Any]:
     tools: list[dict[str, Any]] = []
-    servers = db.query(McpServer).filter(McpServer.project_id == project_id, McpServer.status == "active").all()
+    servers = (
+        db.query(McpServer)
+        .filter(McpServer.project_id == project_id, McpServer.status == "active")
+        .all()
+    )
     for server in servers:
         upstream_tools = _load_tools_from_server(server)
         for tool in upstream_tools:
             description = tool.get("description") or ""
-            scan = scan_content(ScanRequest(project_id=project_id, content=description, source="mcp_tool_description"))
+            input_schema = tool.get("inputSchema", {})
+            annotations = tool.get("annotations", {})
+            scan = scan_content(
+                ScanRequest(
+                    project_id=project_id,
+                    content=json.dumps(tool, ensure_ascii=False, sort_keys=True),
+                    source="mcp_tool_description",
+                )
+            )
             status = "quarantined" if scan.risk_score >= 0.7 else "active"
+            quarantined = status == "quarantined"
+            visible_description = "" if quarantined else description
+            visible_input_schema = {} if quarantined else input_schema
+            visible_annotations = {} if quarantined else annotations
             tool_id = f"{server.id}:{tool.get('name')}"
             existing = db.get(McpTool, tool_id)
             if existing:
-                existing.description = description
-                existing.input_schema = tool.get("inputSchema", {})
-                existing.annotations = tool.get("annotations", {})
+                existing.description = visible_description
+                existing.input_schema = visible_input_schema
+                existing.annotations = visible_annotations
                 existing.risk_score = scan.risk_score
                 existing.risk_labels = scan.risk_labels
                 existing.status = status
@@ -49,21 +75,35 @@ def tools_list(project_id: str = "default", db: Session = Depends(get_db)) -> di
                         project_id=project_id,
                         server_id=server.id,
                         name=tool.get("name", "unknown"),
-                        description=description,
-                        input_schema=tool.get("inputSchema", {}),
-                        annotations=tool.get("annotations", {}),
+                        description=visible_description,
+                        input_schema=visible_input_schema,
+                        annotations=visible_annotations,
                         risk_score=scan.risk_score,
                         risk_labels=scan.risk_labels,
                         status=status,
                     )
                 )
-            tools.append({**tool, "serverId": server.id, "riskScore": scan.risk_score, "riskLabels": scan.risk_labels, "status": status})
+            if not quarantined:
+                tools.append(
+                    {
+                        **tool,
+                        "description": visible_description,
+                        "inputSchema": visible_input_schema,
+                        "annotations": visible_annotations,
+                        "serverId": server.id,
+                        "riskScore": scan.risk_score,
+                        "riskLabels": scan.risk_labels,
+                        "status": status,
+                    }
+                )
     db.commit()
     return {"tools": tools}
 
 
 @router.post("/tools/call")
-def tools_call(payload: dict[str, Any], project_id: str = "default", db: Session = Depends(get_db)) -> dict[str, Any]:
+def tools_call(
+    payload: dict[str, Any], project_id: str = "default", db: Session = Depends(get_db)
+) -> dict[str, Any]:
     tool_name = payload.get("name")
     server_id = payload.get("serverId")
     arguments = payload.get("arguments", {})
@@ -110,7 +150,15 @@ def tools_call(payload: dict[str, Any], project_id: str = "default", db: Session
         },
         risk_score=argument_scan.risk_score,
         risk_labels=argument_scan.risk_labels,
-        data={"labels": argument_scan.risk_labels},
+        data={
+            "labels": argument_scan.risk_labels,
+            "content_source": "mcp_tool_arguments",
+            "trust": "agent_generated",
+        },
+        metadata={
+            "content_source": "mcp_tool_arguments",
+            "trust": "agent_generated",
+        },
     )
     audit_context = context.model_copy(
         update={
@@ -133,9 +181,7 @@ def tools_call(payload: dict[str, Any], project_id: str = "default", db: Session
     approval_request_id = None
     if decision.action == "require_approval":
         approval_request_id = (
-            db.query(ApprovalRequest.id)
-            .filter(ApprovalRequest.decision_id == decision.id)
-            .scalar()
+            db.query(ApprovalRequest.id).filter(ApprovalRequest.decision_id == decision.id).scalar()
         )
     if decision.action != "allow":
         db.commit()
@@ -147,7 +193,8 @@ def tools_call(payload: dict[str, Any], project_id: str = "default", db: Session
         )
     db.commit()
     result = _call_upstream_tool(server, tool_name, arguments)
-    if result.get("isError"):
+    upstream_is_error = bool(result.get("isError"))
+    if upstream_is_error:
         record_audit(
             db,
             project_id=project_id,
@@ -159,14 +206,10 @@ def tools_call(payload: dict[str, Any], project_id: str = "default", db: Session
             after={"is_error": True},
             metadata={"policy_decision_id": decision.id},
         )
-        db.commit()
-        return {
-            **result,
-            "policyDecision": decision.model_dump(),
-            "risk": argument_scan.model_dump(),
-        }
     text = _result_text(result)
-    scan = scan_content(ScanRequest(project_id=project_id, content=text, source="mcp_tool_result"), db)
+    scan = scan_content(
+        ScanRequest(project_id=project_id, content=text, source="mcp_tool_result"), db
+    )
     sanitization_changed = scan.sanitized_text != text
     if scan.risk_score >= 0.4 or sanitization_changed:
         post_context = PolicyContext(
@@ -175,14 +218,29 @@ def tools_call(payload: dict[str, Any], project_id: str = "default", db: Session
             tool={"name": tool_name, "server_id": server_id},
             risk_score=max(scan.risk_score, 0.4 if sanitization_changed else 0.0),
             risk_labels=scan.risk_labels,
-            data={"labels": scan.risk_labels},
-            metadata={"sanitization_changed": sanitization_changed},
+            data={
+                "labels": scan.risk_labels,
+                "content_source": "mcp_tool_result",
+                "trust": "untrusted",
+            },
+            metadata={
+                "sanitization_changed": sanitization_changed,
+                "content_source": "mcp_tool_result",
+                "trust": "untrusted",
+            },
         )
-        post_decision = persist_policy_decision(
-            db,
-            evaluate_policy(post_context, db),
-            post_context,
-        )
+        if _contains_instruction_override(scan.risk_labels):
+            evaluated_post = PolicyDecisionOut(
+                action="quarantine",
+                reason_code="external_instruction_override",
+                severity="critical",
+                matched_policy="external_content_boundary",
+                remediation="Remove instructions from external content before returning it to the agent.",
+                context=post_context.model_dump(),
+            )
+        else:
+            evaluated_post = evaluate_policy(post_context, db)
+        post_decision = persist_policy_decision(db, evaluated_post, post_context)
         if post_decision.action == "allow":
             db.commit()
             return {
@@ -195,7 +253,7 @@ def tools_call(payload: dict[str, Any], project_id: str = "default", db: Session
             return _error_response(
                 post_decision.reason_code,
                 policy_decision=post_decision.model_dump(),
-                risk=scan.model_dump(),
+                risk=_agent_visible_risk(scan),
             )
         db.commit()
         return {
@@ -213,11 +271,24 @@ def resources_list() -> dict[str, list[Any]]:
 
 
 @router.post("/resources/read")
-def resources_read(payload: dict[str, Any], project_id: str = "default", db: Session = Depends(get_db)) -> dict[str, Any]:
+def resources_read(
+    payload: dict[str, Any], project_id: str = "default", db: Session = Depends(get_db)
+) -> dict[str, Any]:
     content = payload.get("content", "")
-    scan = scan_content(ScanRequest(project_id=project_id, content=content, source="mcp_resource"), db)
+    scan = scan_content(
+        ScanRequest(project_id=project_id, content=content, source="mcp_resource"), db
+    )
     db.commit()
-    return {"contents": [{"uri": payload.get("uri", "inline://resource"), "text": scan.sanitized_text}], "risk": scan.model_dump()}
+    if _contains_instruction_override(scan.risk_labels):
+        return {
+            "isError": True,
+            "contents": [],
+            "risk": _agent_visible_risk(scan),
+        }
+    return {
+        "contents": [{"uri": payload.get("uri", "inline://resource"), "text": scan.sanitized_text}],
+        "risk": scan.model_dump(),
+    }
 
 
 @router.get("/prompts/list")
@@ -226,11 +297,22 @@ def prompts_list() -> dict[str, list[Any]]:
 
 
 @router.post("/prompts/get")
-def prompts_get(payload: dict[str, Any], project_id: str = "default", db: Session = Depends(get_db)) -> dict[str, Any]:
+def prompts_get(
+    payload: dict[str, Any], project_id: str = "default", db: Session = Depends(get_db)
+) -> dict[str, Any]:
     prompt = payload.get("prompt", "")
     scan = scan_content(ScanRequest(project_id=project_id, content=prompt, source="mcp_prompt"), db)
     db.commit()
-    return {"messages": [{"role": "user", "content": {"type": "text", "text": scan.sanitized_text}}], "risk": scan.model_dump()}
+    if _contains_instruction_override(scan.risk_labels):
+        return {
+            "isError": True,
+            "messages": [],
+            "risk": _agent_visible_risk(scan),
+        }
+    return {
+        "messages": [{"role": "user", "content": {"type": "text", "text": scan.sanitized_text}}],
+        "risk": scan.model_dump(),
+    }
 
 
 def load_gateway_config(path: str, db: Session) -> None:
@@ -291,7 +373,9 @@ def _load_tools_from_server(server: McpServer, strict: bool = False) -> list[dic
     settings = get_settings()
     if server.transport == "streamable_http" and server.url:
         try:
-            return StreamableHttpTransport(server.url, timeout=settings.gateway_call_timeout_seconds).list_tools()
+            return StreamableHttpTransport(
+                server.url, timeout=settings.gateway_call_timeout_seconds
+            ).list_tools()
         except httpx.HTTPError:
             if strict:
                 raise
@@ -323,13 +407,19 @@ def _load_tools_from_server(server: McpServer, strict: bool = False) -> list[dic
     ]
 
 
-def _call_upstream_tool(server: McpServer, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _call_upstream_tool(
+    server: McpServer, tool_name: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
     settings = get_settings()
     if server.transport == "streamable_http" and server.url:
         try:
-            return StreamableHttpTransport(server.url, timeout=max(settings.gateway_call_timeout_seconds, 30.0)).call_tool(tool_name, arguments)
+            return StreamableHttpTransport(
+                server.url, timeout=max(settings.gateway_call_timeout_seconds, 30.0)
+            ).call_tool(tool_name, arguments)
         except httpx.HTTPError as exc:
-            return _error_response(str(exc), upstream_error={"code": "http_error", "message": str(exc)})
+            return _error_response(
+                str(exc), upstream_error={"code": "http_error", "message": str(exc)}
+            )
     if server.transport == "stdio" and server.command:
         try:
             response = get_stdio_manager(
@@ -344,7 +434,9 @@ def _call_upstream_tool(server: McpServer, tool_name: str, arguments: dict[str, 
                 return _error_response(str(response["error"]), upstream_error=response["error"])
             return response.get("result", {})
         except Exception as exc:
-            return _error_response(str(exc), upstream_error={"code": "stdio_error", "message": str(exc)})
+            return _error_response(
+                str(exc), upstream_error={"code": "stdio_error", "message": str(exc)}
+            )
     return {"content": [{"type": "text", "text": str(arguments.get("text", arguments))}]}
 
 
@@ -366,13 +458,33 @@ def _error_response(
     }
 
 
-def _result_text(result: dict[str, Any]) -> str:
-    content = result.get("content", [])
-    texts = []
-    for item in content:
-        if isinstance(item, dict) and item.get("type") == "text":
-            texts.append(str(item.get("text", "")))
-    return "\n".join(texts) or str(result)
+def _result_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key in sorted(value):
+            parts.extend((str(key), _result_text(value[key])))
+        return "\n".join(parts)
+    if isinstance(value, list):
+        return "\n".join(_result_text(item) for item in value)
+    return str(value)
+
+
+def _contains_instruction_override(labels: list[str]) -> bool:
+    return bool(set(labels) & INSTRUCTION_OVERRIDE_LABELS)
+
+
+def _agent_visible_risk(scan: ScanResponse) -> dict[str, Any]:
+    if not _contains_instruction_override(scan.risk_labels):
+        return scan.model_dump()
+    return scan.model_copy(
+        update={
+            "evidence_spans": [],
+            "sanitized_content_ref": None,
+            "sanitized_text": "",
+        }
+    ).model_dump()
 
 
 app = get_gateway_app()

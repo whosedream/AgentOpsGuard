@@ -31,8 +31,7 @@ DATASET_URL = (
     f"{DATASET_REVISION}/train.jsonl?download=true"
 )
 DEFAULT_DATASET_PATH = (
-    Path.home()
-    / ".cache/huggingface/agentops-guard-benchmarks/nemotron_agentic_ipi_v1_train.jsonl"
+    Path.home() / ".cache/huggingface/agentops-guard-benchmarks/nemotron_agentic_ipi_v1_train.jsonl"
 )
 DEFAULT_OUTPUT_PATH = Path("artifacts/benchmarks/nemotron_agentic_ipi_v1.json")
 IPI_RISK_LABELS = {
@@ -148,21 +147,34 @@ def percentile(values: list[float], quantile: float) -> float:
 def run_benchmark(cases: list[BenchmarkCase]) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     for case in cases:
-        for sample_kind, content in (
-            ("attack", case.attack_context),
-            ("matched_clean", case.matched_clean_context),
-            ("benign_prompt", case.benign_prompt),
+        for sample_kind, content, content_source, trust in (
+            ("attack", case.attack_context, "mcp_tool_result", "untrusted"),
+            (
+                "matched_clean",
+                case.matched_clean_context,
+                "mcp_tool_result",
+                "untrusted",
+            ),
+            ("benign_prompt", case.benign_prompt, "user_input", "trusted"),
         ):
             started = time.perf_counter_ns()
             scan = scan_content(
-                ScanRequest(content=content, source=f"nemotron_{sample_kind}")
+                ScanRequest(
+                    content=content,
+                    source=content_source,
+                    metadata={"trust": trust},
+                )
             )
             elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
             decision = evaluate_builtin_policy(
                 PolicyContext(
                     risk_score=scan.risk_score,
                     risk_labels=scan.risk_labels,
-                    data={"labels": scan.risk_labels},
+                    data={
+                        "labels": scan.risk_labels,
+                        "content_source": content_source,
+                        "trust": trust,
+                    },
                 )
             )
             ipi_labels = sorted(set(scan.risk_labels) & IPI_RISK_LABELS)
@@ -176,6 +188,8 @@ def run_benchmark(cases: list[BenchmarkCase]) -> dict[str, Any]:
                 {
                     "dataset_id": case.dataset_id,
                     "sample_kind": sample_kind,
+                    "content_source": content_source,
+                    "trust": trust,
                     "category": case.category,
                     "domain": case.domain,
                     "detected_ipi": bool(ipi_labels),
@@ -190,18 +204,12 @@ def run_benchmark(cases: list[BenchmarkCase]) -> dict[str, Any]:
             )
 
     attacks = [result for result in results if result["sample_kind"] == "attack"]
-    matched_clean = [
-        result for result in results if result["sample_kind"] == "matched_clean"
-    ]
-    benign_prompts = [
-        result for result in results if result["sample_kind"] == "benign_prompt"
-    ]
+    matched_clean = [result for result in results if result["sample_kind"] == "matched_clean"]
+    benign_prompts = [result for result in results if result["sample_kind"] == "benign_prompt"]
     attack_detected = sum(result["detected_ipi"] for result in attacks)
     attack_localized = sum(result["injection_localized"] for result in attacks)
     matched_clean_detected = sum(result["detected_ipi"] for result in matched_clean)
-    benign_prompt_detected = sum(
-        result["detected_ipi"] for result in benign_prompts
-    )
+    benign_prompt_detected = sum(result["detected_ipi"] for result in benign_prompts)
     attack_recall = attack_detected / len(attacks)
     injection_localized_recall = attack_localized / len(attacks)
     matched_clean_fpr = matched_clean_detected / len(matched_clean)
@@ -217,9 +225,7 @@ def run_benchmark(cases: list[BenchmarkCase]) -> dict[str, Any]:
         for result in results:
             grouped[result["sample_kind"]][result[field]].append(result)
         names = sorted(
-            set(grouped["attack"])
-            | set(grouped["matched_clean"])
-            | set(grouped["benign_prompt"])
+            set(grouped["attack"]) | set(grouped["matched_clean"]) | set(grouped["benign_prompt"])
         )
         slices[field] = {
             name: {
@@ -227,27 +233,21 @@ def run_benchmark(cases: list[BenchmarkCase]) -> dict[str, Any]:
                 "attack_detected": sum(
                     result["detected_ipi"] for result in grouped["attack"][name]
                 ),
-                "attack_recall": sum(
-                    result["detected_ipi"] for result in grouped["attack"][name]
-                )
+                "attack_recall": sum(result["detected_ipi"] for result in grouped["attack"][name])
                 / len(grouped["attack"][name]),
                 "attack_localized": sum(
-                    result["injection_localized"]
-                    for result in grouped["attack"][name]
+                    result["injection_localized"] for result in grouped["attack"][name]
                 ),
                 "localized_recall": sum(
-                    result["injection_localized"]
-                    for result in grouped["attack"][name]
+                    result["injection_localized"] for result in grouped["attack"][name]
                 )
                 / len(grouped["attack"][name]),
                 "matched_clean_fpr": sum(
-                    result["detected_ipi"]
-                    for result in grouped["matched_clean"][name]
+                    result["detected_ipi"] for result in grouped["matched_clean"][name]
                 )
                 / len(grouped["matched_clean"][name]),
                 "benign_prompt_fpr": sum(
-                    result["detected_ipi"]
-                    for result in grouped["benign_prompt"][name]
+                    result["detected_ipi"] for result in grouped["benign_prompt"][name]
                 )
                 / len(grouped["benign_prompt"][name]),
             }
@@ -255,12 +255,8 @@ def run_benchmark(cases: list[BenchmarkCase]) -> dict[str, Any]:
         }
 
     attack_actions = Counter(result["policy_action"] for result in attacks)
-    matched_clean_actions = Counter(
-        result["policy_action"] for result in matched_clean
-    )
-    benign_prompt_actions = Counter(
-        result["policy_action"] for result in benign_prompts
-    )
+    matched_clean_actions = Counter(result["policy_action"] for result in matched_clean)
+    benign_prompt_actions = Counter(result["policy_action"] for result in benign_prompts)
     latency_ms_by_sample = {
         sample_kind: {
             "p50": percentile(
@@ -295,25 +291,13 @@ def run_benchmark(cases: list[BenchmarkCase]) -> dict[str, Any]:
         "matched_clean_false_positive_rate": matched_clean_fpr,
         "benign_prompt_ipi_detected": benign_prompt_detected,
         "benign_prompt_false_positive_rate": benign_prompt_fpr,
-        "balanced_accuracy_matched_clean": (
-            attack_recall + 1 - matched_clean_fpr
-        )
-        / 2,
-        "balanced_accuracy_benign_prompt": (
-            attack_recall + 1 - benign_prompt_fpr
-        )
-        / 2,
-        "attack_any_risk_rate": sum(
-            result["detected_any_risk"] for result in attacks
-        )
+        "balanced_accuracy_matched_clean": (attack_recall + 1 - matched_clean_fpr) / 2,
+        "balanced_accuracy_benign_prompt": (attack_recall + 1 - benign_prompt_fpr) / 2,
+        "attack_any_risk_rate": sum(result["detected_any_risk"] for result in attacks)
         / len(attacks),
-        "matched_clean_any_risk_rate": sum(
-            result["detected_any_risk"] for result in matched_clean
-        )
+        "matched_clean_any_risk_rate": sum(result["detected_any_risk"] for result in matched_clean)
         / len(matched_clean),
-        "benign_prompt_any_risk_rate": sum(
-            result["detected_any_risk"] for result in benign_prompts
-        )
+        "benign_prompt_any_risk_rate": sum(result["detected_any_risk"] for result in benign_prompts)
         / len(benign_prompts),
         "attack_hard_block_rate": sum(
             action in {"deny", "quarantine"} for action in (r["policy_action"] for r in attacks)
@@ -390,6 +374,10 @@ def main() -> int:
             "ipi_risk_labels": sorted(IPI_RISK_LABELS),
             "primary_attack_metric": "IPI-labelled finding anywhere in injected environment context",
             "localized_metric": "IPI-labelled evidence span overlaps the injected text span",
+            "interpretation": (
+                "Regression result on a dataset inspected during rule development; "
+                "not an independent generalization estimate."
+            ),
             "negative_controls": [
                 "derived matched environment string with the injected span removed",
                 "dataset-provided benign user prompt",
@@ -433,10 +421,7 @@ def main() -> int:
         f"({summary['benign_prompt_ipi_detected']}/{summary['benign_prompt_samples']})"
     )
     for sample_kind, latency in summary["latency_ms_by_sample"].items():
-        print(
-            f"{sample_kind} p50/p95 latency: "
-            f"{latency['p50']:.3f}/{latency['p95']:.3f} ms"
-        )
+        print(f"{sample_kind} p50/p95 latency: {latency['p50']:.3f}/{latency['p95']:.3f} ms")
     print(f"report: {args.output.resolve()}")
     return 0
 

@@ -22,6 +22,13 @@ Each source row produces three static scanner inputs:
 3. Benign-prompt negative control: the single user message in `responses_create_params.input`, which the
    dataset card describes as the benign user request.
 
+Attack and matched-clean inputs are both marked as untrusted MCP tool results. Benign prompts are
+marked as trusted user input. Detection rules may use this provenance, but never the attack/clean
+label itself.
+
+If this dataset was inspected while developing a rule, the resulting score is a regression result,
+not an independent estimate of how well the scanner generalizes to unseen attacks.
+
 Primary prompt-injection detection is limited to the declared `IPI_RISK_LABELS`; any scanner
 risk remains a separate operational metric. The report must keep injection-localized detection,
 hard block (`deny`/`quarantine`), approval gate, redaction, and any non-allow action separate. It
