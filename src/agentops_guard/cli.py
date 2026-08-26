@@ -12,7 +12,7 @@ from agentops_guard.backend.database import SessionLocal, init_db
 from agentops_guard.backend.schemas import EvalRunCreate, EvalSuiteCreate
 from agentops_guard.backend.services.eval import create_eval_suite, run_eval
 from agentops_guard.backend.services.jobs import redis_connection
-from agentops_guard.gateway.app import load_gateway_config
+from agentops_guard.backend.telemetry import configure_telemetry
 
 app = typer.Typer(help="AgentOps Guard developer CLI")
 
@@ -26,6 +26,8 @@ def api(host: str = "127.0.0.1", port: int = 8000, reload: bool = False) -> None
 @app.command()
 def gateway(config: Optional[Path] = None, host: str = "127.0.0.1", port: int = 8001, reload: bool = False) -> None:
     """Run the MCP gateway."""
+    from agentops_guard.gateway.app import load_gateway_config
+
     if config:
         init_db()
         db = SessionLocal()
@@ -39,6 +41,8 @@ def gateway(config: Optional[Path] = None, host: str = "127.0.0.1", port: int = 
 @app.command("load-mcp-config")
 def load_mcp_config(config: Path) -> None:
     """Load MCP gateway YAML into the registry."""
+    from agentops_guard.gateway.app import load_gateway_config
+
     init_db()
     db = SessionLocal()
     try:
@@ -67,6 +71,7 @@ def run_eval_file(path: Path, project_id: str = "default") -> None:
 @app.command("worker")
 def worker(queue: str = "default", burst: bool = False, with_scheduler: bool = False) -> None:
     """Run the Redis/RQ worker for AgentOps background jobs."""
+    configure_telemetry("agentops-guard-worker")
     init_db()
     connection = redis_connection()
     try:

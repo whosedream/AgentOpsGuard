@@ -6,6 +6,7 @@ from agentops_guard.backend.database import get_db
 from agentops_guard.backend.models import PolicyDecision
 from agentops_guard.backend.schemas import PolicyContext, PolicyDecisionOut, ScanRequest, ScanResponse
 from agentops_guard.backend.services.policy import evaluate_policy, persist_policy_decision
+from agentops_guard.backend.services.opa import check_opa_health
 from agentops_guard.backend.services.projects import ensure_project
 from agentops_guard.backend.services.scanner import scan_content
 
@@ -31,7 +32,11 @@ def list_policy_decisions(project_id: str = "default", limit: int = Query(defaul
 
 @v1_router.post("/policies/reload")
 def reload_policies() -> dict[str, str]:
-    return {"status": "ok", "message": "Built-in policy pack is active; OPA reload hook reserved for deployment."}
+    check_opa_health()
+    return {
+        "status": "ok",
+        "message": "Policy provider is healthy; file and bundle updates are managed by the deployment.",
+    }
 
 
 @v1_router.post("/scanner/scan", response_model=ScanResponse)

@@ -1,0 +1,13 @@
+{{- if .Values.opa.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentops-guard.name" . }}-opa-policy
+  labels:
+    {{- include "agentops-guard.labels" . | nindent 4 }}
+data:
+  dangerous_command.rego: |
+{{ .Files.Get "files/dangerous_command.rego" | indent 4 }}
+  decision.rego: |
+{{ .Files.Get "files/decision.rego" | indent 4 }}
+{{- end }}

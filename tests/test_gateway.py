@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agentops_guard.backend.database import SessionLocal
+from agentops_guard.backend.main import app as backend_app
 from agentops_guard.backend.models import (
     ApprovalRequest,
     AuditLog,
@@ -19,9 +20,17 @@ from agentops_guard.backend.services.projects import ensure_project
 from agentops_guard.gateway.app import app
 
 client = TestClient(app)
+backend_client = TestClient(backend_app)
+backend_headers = {"X-AgentOps-Api-Key": "dev-agentops-key"}
 
 
-def add_server(project_id: str, server_id: str, *, status: str = "active") -> None:
+def add_server(
+    project_id: str,
+    server_id: str,
+    *,
+    status: str = "active",
+    trust_level: str = "internal",
+) -> None:
     db = SessionLocal()
     try:
         ensure_project(db, project_id)
@@ -32,6 +41,7 @@ def add_server(project_id: str, server_id: str, *, status: str = "active") -> No
                 name="gateway test",
                 transport="streamable_http",
                 url="https://upstream.invalid/mcp",
+                trust_level=trust_level,
                 allowed_agents=[],
                 status=status,
             )
@@ -39,6 +49,25 @@ def add_server(project_id: str, server_id: str, *, status: str = "active") -> No
         db.commit()
     finally:
         db.close()
+
+
+def add_run(project_id: str, agent_id: str, user_request: str) -> str:
+    response = backend_client.post(
+        "/v1/runs",
+        headers=backend_headers,
+        json={
+            "project_id": project_id,
+            "agent_id": agent_id,
+            "input": {"text": user_request},
+        },
+    )
+    assert response.status_code == 200
+    return response.json()["id"]
+
+
+def test_gateway_health_and_model_readiness_endpoints():
+    assert client.get("/healthz").json() == {"status": "ok"}
+    assert client.get("/readyz").json() == {"status": "ready"}
 
 
 def test_gateway_resource_scans_content():
@@ -410,6 +439,188 @@ def test_gateway_requires_approval_without_calling_upstream(monkeypatch):
         assert body["approvalRequestId"] == approval.id
     finally:
         db.close()
+
+
+def test_gateway_requires_approval_for_unbound_send_action(monkeypatch):
+    suffix = uuid4().hex
+    project_id = f"gateway_unbound_send_{suffix}"
+    server_id = f"server_{suffix}"
+    add_server(project_id, server_id)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("an unbound send action must not reach the upstream tool")
+
+    monkeypatch.setattr("agentops_guard.gateway.app._call_upstream_tool", fail_if_called)
+    response = client.post(
+        f"/mcp/tools/call?project_id={project_id}",
+        json={
+            "serverId": server_id,
+            "name": "mail.send",
+            "arguments": {"recipient": "finance@example.com", "body": "hello"},
+            "agentId": "test-agent",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["isError"] is True
+    assert body["policyDecision"]["action"] == "require_approval"
+    assert body["policyDecision"]["reason_code"] == "trusted_user_intent_required"
+    assert body["approvalRequestId"]
+
+
+def test_gateway_allows_explicitly_authorized_custom_send_target(monkeypatch):
+    suffix = uuid4().hex
+    project_id = f"gateway_authorized_send_{suffix}"
+    server_id = f"server_{suffix}"
+    agent_id = "test-agent"
+    recipient = "finance@example.com"
+    add_server(project_id, server_id)
+    run_id = add_run(project_id, agent_id, f"请发送月报给 {recipient}")
+    received_arguments: list[dict] = []
+
+    def send(_server, _tool_name, arguments):
+        received_arguments.append(arguments)
+        return {"content": [{"type": "text", "text": "sent"}]}
+
+    monkeypatch.setattr("agentops_guard.gateway.app._call_upstream_tool", send)
+    response = client.post(
+        f"/mcp/tools/call?project_id={project_id}",
+        json={
+            "serverId": server_id,
+            "name": "mail.send",
+            "arguments": {"recipient": recipient, "body": "月报"},
+            "agentId": agent_id,
+            "runId": run_id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["policyDecision"]["action"] == "allow"
+    assert received_arguments == [{"recipient": recipient, "body": "月报"}]
+
+
+def test_gateway_requires_approval_when_tool_target_differs_from_user_request(monkeypatch):
+    suffix = uuid4().hex
+    project_id = f"gateway_target_mismatch_{suffix}"
+    server_id = f"server_{suffix}"
+    agent_id = "test-agent"
+    add_server(project_id, server_id)
+    run_id = add_run(project_id, agent_id, "请发送月报给 finance@example.com")
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("a changed target must not reach the upstream tool")
+
+    monkeypatch.setattr("agentops_guard.gateway.app._call_upstream_tool", fail_if_called)
+    response = client.post(
+        f"/mcp/tools/call?project_id={project_id}",
+        json={
+            "serverId": server_id,
+            "name": "mail.send",
+            "arguments": {"recipient": "attacker@example.com", "body": "月报"},
+            "agentId": agent_id,
+            "runId": run_id,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["policyDecision"]["action"] == "require_approval"
+    assert body["policyDecision"]["reason_code"] == "tool_target_not_authorized"
+    assert body["approvalRequestId"]
+
+
+def test_gateway_ignores_agent_reported_user_intent(monkeypatch):
+    suffix = uuid4().hex
+    project_id = f"gateway_forged_intent_{suffix}"
+    server_id = f"server_{suffix}"
+    add_server(project_id, server_id)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("caller-reported intent must not authorize a send action")
+
+    monkeypatch.setattr("agentops_guard.gateway.app._call_upstream_tool", fail_if_called)
+    response = client.post(
+        f"/mcp/tools/call?project_id={project_id}",
+        json={
+            "serverId": server_id,
+            "name": "mail.send",
+            "arguments": {"recipient": "finance@example.com"},
+            "agentId": "test-agent",
+            "userIntent": "send to finance@example.com",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["policyDecision"]["reason_code"] == "trusted_user_intent_required"
+
+
+def test_gateway_requires_approval_for_destructive_tool_annotation(monkeypatch):
+    suffix = uuid4().hex
+    project_id = f"gateway_destructive_annotation_{suffix}"
+    server_id = f"server_{suffix}"
+    add_server(project_id, server_id)
+    db = SessionLocal()
+    try:
+        db.add(
+            McpTool(
+                id=f"{server_id}:records.apply",
+                project_id=project_id,
+                server_id=server_id,
+                name="records.apply",
+                description="Apply changes",
+                input_schema={},
+                annotations={"destructiveHint": True},
+                status="active",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("a destructive action without a run must not execute")
+
+    monkeypatch.setattr("agentops_guard.gateway.app._call_upstream_tool", fail_if_called)
+    response = client.post(
+        f"/mcp/tools/call?project_id={project_id}",
+        json={
+            "serverId": server_id,
+            "name": "records.apply",
+            "arguments": {"record_id": "customer-17"},
+            "agentId": "test-agent",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["policyDecision"]["action"] == "require_approval"
+
+
+def test_gateway_requires_approval_for_unreviewed_external_tool(monkeypatch):
+    suffix = uuid4().hex
+    project_id = f"gateway_external_unknown_{suffix}"
+    server_id = f"server_{suffix}"
+    add_server(project_id, server_id, trust_level="external")
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("an unreviewed external tool must not execute automatically")
+
+    monkeypatch.setattr("agentops_guard.gateway.app._call_upstream_tool", fail_if_called)
+    response = client.post(
+        f"/mcp/tools/call?project_id={project_id}",
+        json={
+            "serverId": server_id,
+            "name": "records.apply",
+            "arguments": {},
+            "agentId": "test-agent",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["policyDecision"]["action"] == "require_approval"
+    assert body["policyDecision"]["reason_code"] == "unreviewed_external_tool"
+    assert body["approvalRequestId"]
 
 
 def test_gateway_scans_arguments_before_calling_upstream(monkeypatch):
@@ -810,6 +1021,7 @@ def test_gateway_allows_benign_email_tool_argument(monkeypatch):
     server_id = f"server_{suffix}"
     email = "recipient@example.com"
     add_server(project_id, server_id)
+    run_id = add_run(project_id, "test-agent", f"Send an email to {email}")
     received_arguments = []
 
     def echo_arguments(_server, _tool_name, arguments):
@@ -823,6 +1035,8 @@ def test_gateway_allows_benign_email_tool_argument(monkeypatch):
             "serverId": server_id,
             "name": "demo.email",
             "arguments": {"recipient": email},
+            "agentId": "test-agent",
+            "runId": run_id,
         },
     )
 

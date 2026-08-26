@@ -29,6 +29,10 @@ def test_alembic_upgrade_from_identity_schema_creates_bound_credentials(
 
     _upgrade(db_path, "head")
     inspector = inspect(engine)
+    mcp_server_columns = {
+        column["name"] for column in inspector.get_columns("mcp_servers")
+    }
+    assert "runtime_provider" in mcp_server_columns
     columns = {column["name"] for column in inspector.get_columns("service_credentials")}
     assert columns == {
         "credential_ref",
@@ -66,4 +70,4 @@ def test_alembic_upgrade_from_identity_schema_creates_bound_credentials(
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert version == "0005_service_credentials"
+    assert version == "0006_mcp_runtime_provider"

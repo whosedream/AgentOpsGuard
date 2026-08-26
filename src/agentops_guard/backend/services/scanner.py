@@ -8,13 +8,24 @@ from sqlalchemy.orm import Session
 
 from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.models import RiskEvent, ScanRule
-from agentops_guard.backend.schemas import ContentIn, EvidenceSpan, ScanRequest, ScanResponse
+from agentops_guard.backend.schemas import (
+    ContentIn,
+    EvidenceSpan,
+    ScanRequest,
+    ScanResponse,
+    SemanticAssessment,
+)
 from agentops_guard.backend.services.content import (
     SECRET_PATTERNS,
     detect_secret_labels,
     new_id,
     persist_content,
     redact_text,
+)
+from agentops_guard.backend.services.semantic_scanner import (
+    SEMANTIC_MODEL_ID,
+    SemanticScannerUnavailable,
+    get_semantic_scanner,
 )
 
 
@@ -105,6 +116,7 @@ EXTERNAL_CONTENT_QUARANTINE_LABELS = frozenset(
     {
         "hidden_html",
         "instruction_override",
+        "semantic_prompt_injection",
         "system_prompt_override",
     }
 )
@@ -248,18 +260,26 @@ def _max_severity(labels: list[str], severities: list[str]) -> str:
     return max(severities, key=lambda item: SEVERITY_ORDER[item])
 
 
-def _decode_base64_candidates(content: str) -> list[tuple[str, int, int]]:
+def _decode_base64_candidates(
+    content: str,
+    *,
+    untrusted: bool,
+) -> list[tuple[str, int, int]]:
     decoded: list[tuple[str, int, int]] = []
     for match in list(re.finditer(r"[A-Za-z0-9+/=]{32,}", content))[:10]:
         candidate = match.group(0)
         try:
-            value = base64.b64decode(candidate, validate=True).decode("utf-8", errors="ignore")
-        except (binascii.Error, ValueError):
+            value = base64.b64decode(candidate, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError, ValueError):
             continue
         secret_labels = set(detect_secret_labels(value)) - {"email", "phone"}
+        readable_text = bool(value.strip()) and sum(
+            character.isprintable() or character.isspace() for character in value
+        ) / len(value) >= 0.9
         if (
             any(term in value.lower() for term in ("ignore", "secret", "token", "instruction"))
             or secret_labels
+            or (untrusted and readable_text)
         ):
             decoded.append((value, match.start(), match.end()))
     return decoded
@@ -270,8 +290,12 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
     evidence: list[EvidenceSpan] = []
     severities: list[str] = []
     score = 0.0
+    semantic_assessment: SemanticAssessment | None = None
 
-    decoded_candidates = _decode_base64_candidates(request.content)
+    decoded_candidates = _decode_base64_candidates(
+        request.content,
+        untrusted=request.source not in TRUSTED_SOURCES,
+    )
     texts = [(request.content, 0)]
     for decoded, start, end in decoded_candidates:
         texts.append((decoded, -1))
@@ -337,6 +361,36 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
             for _, start, end in decoded_candidates
         )
 
+    semantic_scanner = get_semantic_scanner()
+    if semantic_scanner is not None:
+        try:
+            semantic_assessment = semantic_scanner.assess(request)
+        except SemanticScannerUnavailable:
+            if semantic_scanner.mode == "enforce":
+                raise
+            semantic_assessment = SemanticAssessment(
+                status="error",
+                mode="shadow",
+                model=SEMANTIC_MODEL_ID,
+            )
+        if (
+            semantic_assessment is not None
+            and semantic_assessment.status == "ok"
+            and semantic_assessment.mode == "enforce"
+            and semantic_assessment.label == "prompt_injection"
+        ):
+            labels.append("semantic_prompt_injection")
+            severities.append("high")
+            score = max(score, 0.8)
+            evidence.append(
+                EvidenceSpan(
+                    label="semantic_prompt_injection",
+                    start=0,
+                    end=len(request.content),
+                    snippet="[REDACTED:semantic_prompt_injection]",
+                )
+            )
+
     sanitized_text = request.content
     merged_spans: list[tuple[int, int, set[str]]] = []
     for finding in sorted(evidence, key=lambda item: item.start):
@@ -363,6 +417,41 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
             request.project_id,
             ContentIn(text=sanitized_text, content_type=request.content_type, labels=labels),
         )
+        if semantic_assessment is not None and semantic_assessment.mode == "shadow":
+            if semantic_assessment.status == "error":
+                db.add(
+                    RiskEvent(
+                        id=new_id("risk"),
+                        project_id=request.project_id,
+                        run_id=request.run_id,
+                        event_id=request.event_id,
+                        risk_type="semantic_scanner_error",
+                        severity="medium",
+                        score=0.0,
+                        labels=["semantic_scanner_error"],
+                        evidence=[],
+                        description=(
+                            f"Semantic scanner was unavailable for {request.source} content."
+                        ),
+                    )
+                )
+            elif semantic_assessment.label == "prompt_injection":
+                db.add(
+                    RiskEvent(
+                        id=new_id("risk"),
+                        project_id=request.project_id,
+                        run_id=request.run_id,
+                        event_id=request.event_id,
+                        risk_type="semantic_prompt_injection_shadow",
+                        severity="high",
+                        score=0.8,
+                        labels=["semantic_prompt_injection_shadow"],
+                        evidence=[],
+                        description=(
+                            f"Semantic shadow scanner flagged {request.source} content."
+                        ),
+                    )
+                )
         if labels:
             db.add(
                 RiskEvent(
@@ -387,6 +476,7 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
         sanitized_content_ref=sanitized_ref,
         sanitized_text=sanitized_text,
         severity=_max_severity(labels, severities),
+        semantic_assessment=semantic_assessment,
     )
 
 

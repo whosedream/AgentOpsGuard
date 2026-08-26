@@ -15,7 +15,16 @@ services:
       AGENTOPS_API_KEY: dev-agentops-key
       AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
       AGENTOPS_REDIS_URL: redis://redis:6379/0
+      AGENTOPS_OPA_URL: http://opa:8181
+      AGENTOPS_POLICY_FAIL_MODE: closed_for_high_risk
+      AGENTOPS_CREDENTIAL_STORE: ${AGENTOPS_CREDENTIAL_STORE:-fernet}
       AGENTOPS_CREDENTIAL_ENCRYPTION_KEY: ${AGENTOPS_CREDENTIAL_ENCRYPTION_KEY:-}
+      AGENTOPS_OPENBAO_URL: ${AGENTOPS_OPENBAO_URL:-}
+      AGENTOPS_OPENBAO_TOKEN: ${AGENTOPS_OPENBAO_TOKEN:-}
+      AGENTOPS_OPENBAO_KV_MOUNT: ${AGENTOPS_OPENBAO_KV_MOUNT:-secret}
+      AGENTOPS_OTEL_ENABLED: "true"
+      AGENTOPS_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      AGENTOPS_OTEL_SERVICE_NAME: agentops-guard-api
     ports:
       - "8000:8000"
     depends_on:
@@ -23,6 +32,10 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      opa:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).read()"]
       interval: 10s
@@ -36,6 +49,19 @@ services:
       AGENTOPS_API_KEY: dev-agentops-key
       AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
       AGENTOPS_REDIS_URL: redis://redis:6379/0
+      AGENTOPS_OPA_URL: http://opa:8181
+      AGENTOPS_POLICY_FAIL_MODE: closed_for_high_risk
+      AGENTOPS_SEMANTIC_SCANNER_MODE: ${AGENTOPS_SEMANTIC_SCANNER_MODE:-disabled}
+      AGENTOPS_SEMANTIC_MODEL_PATH: /models/semantic-guard
+      AGENTOPS_SEMANTIC_MODEL_SHA256: ${AGENTOPS_SEMANTIC_MODEL_SHA256:-}
+      AGENTOPS_SEMANTIC_SCANNER_THRESHOLD: ${AGENTOPS_SEMANTIC_SCANNER_THRESHOLD:-0.90}
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      AGENTOPS_OTEL_ENABLED: "true"
+      AGENTOPS_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      AGENTOPS_OTEL_SERVICE_NAME: agentops-guard-gateway
+    volumes:
+      - ${AGENTOPS_SEMANTIC_MODEL_DIR:-./models/semantic-guard}:/models/semantic-guard:ro
     ports:
       - "8001:8001"
     depends_on:
@@ -43,8 +69,12 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      opa:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/mcp/tools/list', timeout=5).read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/readyz', timeout=5).read()"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -56,11 +86,20 @@ services:
       AGENTOPS_API_KEY: dev-agentops-key
       AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
       AGENTOPS_REDIS_URL: redis://redis:6379/0
+      AGENTOPS_OPA_URL: http://opa:8181
+      AGENTOPS_POLICY_FAIL_MODE: closed_for_high_risk
+      AGENTOPS_OTEL_ENABLED: "true"
+      AGENTOPS_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      AGENTOPS_OTEL_SERVICE_NAME: agentops-guard-worker
     depends_on:
       migration:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      opa:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   dashboard:
     image: node:22-bookworm-slim
@@ -112,6 +151,29 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
+  opa:
+    image: ${AGENTOPS_OPA_IMAGE:-openpolicyagent/opa:1.8.0-debug}
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "--log-format=json", "/policies"]
+    volumes:
+      - ./policies:/policies:ro
+    ports:
+      - "8181:8181"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8181/health?bundles=true&plugins=true"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  otel-collector:
+    image: ${AGENTOPS_OTEL_COLLECTOR_IMAGE:-otel/opentelemetry-collector-contrib:0.136.0}
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./deploy/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
 
 volumes:
   postgres_data:

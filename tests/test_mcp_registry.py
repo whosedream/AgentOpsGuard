@@ -47,6 +47,49 @@ def test_SPEC_MCP_004_server_status_update_and_list_contract():
     assert invalid.status_code == 422
 
 
+def test_toolhive_runtime_requires_standard_mcp_and_sandboxed_trust():
+    suffix = uuid4().hex[:8]
+    project_id = f"toolhive_project_{suffix}"
+
+    invalid = client.post(
+        "/v1/mcp/servers",
+        headers=headers,
+        json={
+            "id": f"toolhive_invalid_{suffix}",
+            "project_id": project_id,
+            "name": "invalid ToolHive server",
+            "runtime_provider": "toolhive",
+            "transport": "stdio",
+            "trust_level": "internal",
+        },
+    )
+    assert invalid.status_code == 422
+
+    server_id = f"toolhive_{suffix}"
+    created = client.post(
+        "/v1/mcp/servers",
+        headers=headers,
+        json={
+            "id": server_id,
+            "project_id": project_id,
+            "name": "ToolHive sandbox",
+            "runtime_provider": "toolhive",
+            "transport": "streamable_http",
+            "url": "http://127.0.0.1:4484/mcp",
+            "trust_level": "sandboxed",
+        },
+    )
+    assert created.status_code == 200
+    assert created.json()["runtime_provider"] == "toolhive"
+
+    invalid_update = client.patch(
+        f"/v1/mcp/servers/{server_id}",
+        headers=headers,
+        json={"trust_level": "internal"},
+    )
+    assert invalid_update.status_code == 422
+
+
 def test_SPEC_MCP_004_refresh_failure_preserves_cached_tools_and_marks_server_error(monkeypatch):
     from agentops_guard.backend.services import mcp_refresh
 
@@ -203,10 +246,10 @@ def test_SPEC_MCP_004_streamable_http_refresh_failure_is_not_treated_as_success(
     finally:
         db.close()
 
-    def fail_get(*_args, **_kwargs):
+    def fail_list_tools(*_args, **_kwargs):
         raise httpx.ConnectError("upstream refused connection")
 
-    monkeypatch.setattr(httpx, "get", fail_get)
+    monkeypatch.setattr(mcp_refresh, "_load_tools_from_server", fail_list_tools)
 
     db = SessionLocal()
     try:

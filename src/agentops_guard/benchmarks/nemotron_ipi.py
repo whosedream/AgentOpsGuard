@@ -350,9 +350,12 @@ def main() -> int:
         ).stdout
     )
     implementation_paths = [
+        "pyproject.toml",
+        "src/agentops_guard/backend/config.py",
         "src/agentops_guard/backend/services/content.py",
         "src/agentops_guard/backend/services/policy.py",
         "src/agentops_guard/backend/services/scanner.py",
+        "src/agentops_guard/backend/services/semantic_scanner.py",
         "src/agentops_guard/benchmarks/nemotron_ipi.py",
         "uv.lock",
     ]

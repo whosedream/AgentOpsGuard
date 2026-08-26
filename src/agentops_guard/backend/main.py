@@ -12,12 +12,14 @@ from agentops_guard.backend.database import init_db
 from agentops_guard.backend.observability import RequestContextMiddleware
 from agentops_guard.backend.routes import ops_router, public_router, router
 from agentops_guard.backend.services.credentials import CredentialVault
+from agentops_guard.backend.telemetry import TelemetryMiddleware, configure_telemetry
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    encryption_key = get_settings().credential_encryption_key
-    if encryption_key is not None:
+    settings = get_settings()
+    encryption_key = settings.credential_encryption_key
+    if settings.credential_store == "fernet" and encryption_key is not None:
         try:
             CredentialVault(encryption_key.get_secret_value())
         except ValueError:
@@ -28,6 +30,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    configure_telemetry("agentops-guard-api")
     app = FastAPI(
         title="AgentOps Guard API",
         version="0.1.0",
@@ -42,6 +45,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(TelemetryMiddleware, component="api")
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request, exc):

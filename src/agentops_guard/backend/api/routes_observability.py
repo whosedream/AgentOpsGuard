@@ -22,7 +22,13 @@ from agentops_guard.backend.observability import (
 )
 from agentops_guard.backend.schemas import ComponentStatus, SystemConfig, SystemCounts, SystemStatusOut
 from agentops_guard.backend.services.jobs import redis_connection
+from agentops_guard.backend.services.credentials import (
+    CredentialStoreUnavailable,
+    OpenBaoCredentialStore,
+    configured_credential_store,
+)
 from agentops_guard.backend.services.migrations import migration_status
+from agentops_guard.backend.services.opa import OpaUnavailable, check_opa_health
 from agentops_guard.backend.services.projects import ensure_project
 
 
@@ -42,8 +48,18 @@ def healthz() -> dict[str, str]:
 
 @router.get("/readyz")
 def readyz(response: Response, db: Session = Depends(get_db)) -> dict[str, ComponentStatus]:
+    settings = get_settings()
     database = ComponentStatus(status="ok")
-    redis = ComponentStatus(status="ok", url=get_settings().redis_url)
+    redis = ComponentStatus(status="ok", url=settings.redis_url)
+    opa = ComponentStatus(status="disabled" if settings.opa_url is None else "ok")
+    credential_store = ComponentStatus(
+        status=(
+            "disabled"
+            if settings.credential_store == "fernet"
+            and settings.credential_encryption_key is None
+            else "ok"
+        )
+    )
     status_code = "ok"
     try:
         db.execute(text("SELECT 1"))
@@ -57,10 +73,32 @@ def readyz(response: Response, db: Session = Depends(get_db)) -> dict[str, Compo
         redis_connection().ping()
     except RedisError as exc:
         status_code = "error"
-        redis = ComponentStatus(status="error", detail=str(exc), url=get_settings().redis_url)
+        redis = ComponentStatus(status="error", detail=str(exc), url=settings.redis_url)
+    try:
+        check_opa_health()
+    except OpaUnavailable:
+        status_code = "error"
+        opa = ComponentStatus(status="error", detail="OPA unavailable")
+    if settings.credential_store == "openbao":
+        try:
+            store = configured_credential_store()
+            assert isinstance(store, OpenBaoCredentialStore)
+            store.check_health()
+        except CredentialStoreUnavailable:
+            status_code = "error"
+            credential_store = ComponentStatus(
+                status="error", detail="OpenBao unavailable"
+            )
     if status_code != "ok":
         response.status_code = 503
-    return {"status": ComponentStatus(status=status_code), "database": database, "redis": redis, "migration": migration}
+    return {
+        "status": ComponentStatus(status=status_code),
+        "database": database,
+        "redis": redis,
+        "migration": migration,
+        "opa": opa,
+        "credential_store": credential_store,
+    }
 
 
 @router.get("/metrics")

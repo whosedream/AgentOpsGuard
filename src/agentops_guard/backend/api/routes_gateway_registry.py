@@ -27,6 +27,7 @@ def create_mcp_server(payload: McpServerConfig, request: Request, db: Session = 
     row.project_id = payload.project_id
     row.name = payload.name
     row.transport = payload.transport
+    row.runtime_provider = payload.runtime_provider
     row.command = payload.command
     row.args = payload.args
     row.url = payload.url
@@ -62,6 +63,19 @@ def update_mcp_server(server_id: str, payload: McpServerUpdate, request: Request
         raise HTTPException(404, "MCP server not found")
     authorize_project_access(get_auth_context(request), row.project_id, conceal=True, db=db)
     updates = payload.model_dump(exclude_unset=True)
+    candidate_runtime = updates.get("runtime_provider", row.runtime_provider)
+    candidate_transport = updates.get("transport", row.transport)
+    candidate_url = updates.get("url", row.url)
+    candidate_trust = updates.get("trust_level", row.trust_level)
+    if candidate_runtime == "toolhive" and (
+        candidate_transport != "streamable_http"
+        or not candidate_url
+        or candidate_trust != "sandboxed"
+    ):
+        raise HTTPException(
+            422,
+            "ToolHive servers require streamable_http, a URL, and sandboxed trust",
+        )
     before = mcp_server_out(row).model_dump(mode="json")
     for key, value in updates.items():
         setattr(row, key, value)

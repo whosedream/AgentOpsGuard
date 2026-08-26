@@ -10,6 +10,7 @@ from agentops_guard.backend.database import get_db
 from agentops_guard.backend.models import ContentObject, RiskEvent, Run, TraceEvent
 from agentops_guard.backend.schemas import ContentOut, EventsIn, PageOut, RunCreate, RunDag, RunOut, RunUpdate, TraceEventOut
 from agentops_guard.backend.services.content import new_id, persist_content
+from agentops_guard.backend.services.policy import INTENT_MANIFEST_KEY, build_user_intent_manifest
 from agentops_guard.backend.services.projects import ensure_project, project_for_resource
 from agentops_guard.backend.services.trace import build_dag, run_to_schema
 
@@ -22,7 +23,22 @@ def create_run(payload: RunCreate, request: Request, db: Session = Depends(get_d
     authorize_project_access(get_auth_context(request), payload.project_id, db=db)
     ensure_project(db, payload.project_id)
     input_ref = persist_content(db, payload.project_id, payload.input)
-    run = Run(id=new_id("run"), project_id=payload.project_id, agent_id=payload.agent_id, trace_id=new_id("trace"), name=payload.name, user_id=payload.user_id, input_ref=input_ref, metadata_json=payload.metadata)
+    metadata = {
+        **payload.metadata,
+        INTENT_MANIFEST_KEY: build_user_intent_manifest(
+            payload.input.text if payload.input is not None else None
+        ),
+    }
+    run = Run(
+        id=new_id("run"),
+        project_id=payload.project_id,
+        agent_id=payload.agent_id,
+        trace_id=new_id("trace"),
+        name=payload.name,
+        user_id=payload.user_id,
+        input_ref=input_ref,
+        metadata_json=metadata,
+    )
     db.add(run)
     db.commit()
     db.refresh(run)
@@ -49,7 +65,10 @@ def update_run(run_id: str, payload: RunUpdate, request: Request, db: Session = 
     if payload.total_tokens is not None:
         run.total_tokens = payload.total_tokens
     if payload.metadata is not None:
-        run.metadata_json = {**(run.metadata_json or {}), **payload.metadata}
+        public_metadata = {
+            key: value for key, value in payload.metadata.items() if key != INTENT_MANIFEST_KEY
+        }
+        run.metadata_json = {**(run.metadata_json or {}), **public_metadata}
     db.commit()
     db.refresh(run)
     return run_to_schema(run)

@@ -1,6 +1,5 @@
 import json
 from datetime import UTC, datetime
-from hashlib import sha256
 from typing import Any
 
 import httpx
@@ -15,7 +14,6 @@ from agentops_guard.backend.auth import (
     require_membership_capability,
     require_scope,
 )
-from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.database import get_db
 from agentops_guard.backend.models import Project, ServiceCredential
 from agentops_guard.backend.schemas import (
@@ -27,7 +25,11 @@ from agentops_guard.backend.schemas import (
 )
 from agentops_guard.backend.services.audit import record_audit
 from agentops_guard.backend.services.content import detect_secret_labels, new_id
-from agentops_guard.backend.services.credentials import CredentialVault
+from agentops_guard.backend.services.credentials import (
+    CredentialStore,
+    CredentialStoreUnavailable,
+    configured_credential_store,
+)
 from agentops_guard.backend.services.deepseek import (
     DEEPSEEK_CHAT_COMPLETIONS_URL,
     DeepSeekTransport,
@@ -43,13 +45,10 @@ DEEPSEEK_SCOPE = "models:invoke"
 v1_router = APIRouter()
 
 
-def get_credential_vault() -> CredentialVault:
-    key = get_settings().credential_encryption_key
-    if key is None:
-        raise HTTPException(503, "Credential vault is unavailable")
+def get_credential_vault() -> CredentialStore:
     try:
-        return CredentialVault(key.get_secret_value())
-    except ValueError:
+        return configured_credential_store()
+    except (CredentialStoreUnavailable, ValueError):
         raise HTTPException(503, "Credential vault is unavailable") from None
 
 
@@ -61,11 +60,16 @@ def _resolve_bound_secret(
     credential_ref: str,
     *,
     row: ServiceCredential,
-    vault: CredentialVault,
+    vault: CredentialStore,
 ) -> str:
     if credential_ref != row.credential_ref:
         raise ValueError("credential reference mismatch")
-    return vault.decrypt(row.encrypted_secret)
+    return vault.resolve_credential(
+        row.credential_ref,
+        row.encrypted_secret,
+        row.binding_ciphertext,
+        _binding(row),
+    )
 
 
 @v1_router.post(
@@ -76,7 +80,7 @@ def _resolve_bound_secret(
 def create_deepseek_credential(
     payload: DeepSeekCredentialCreate,
     request: Request,
-    vault: CredentialVault = Depends(get_credential_vault),
+    vault: CredentialStore = Depends(get_credential_vault),
     db: Session = Depends(get_db),
 ) -> CredentialRefOut:
     auth = get_auth_context(request)
@@ -108,8 +112,10 @@ def create_deepseek_credential(
         or _contains_secret(metadata)
     ):
         raise HTTPException(400, "Credential metadata contains a raw secret")
-    row.encrypted_secret = _encrypt_envelope(vault, row, plaintext_secret)
-    _attach_binding_ciphertext(vault, row)
+    try:
+        _store_credential(vault, row, plaintext_secret)
+    except CredentialStoreUnavailable:
+        raise HTTPException(503, "Credential vault is unavailable") from None
     db.add(row)
     db.flush()
     _audit(
@@ -132,7 +138,7 @@ def rotate_deepseek_credential(
     credential_ref: str,
     payload: DeepSeekCredentialRotate,
     request: Request,
-    vault: CredentialVault = Depends(get_credential_vault),
+    vault: CredentialStore = Depends(get_credential_vault),
     db: Session = Depends(get_db),
 ) -> CredentialRefOut:
     auth = get_auth_context(request)
@@ -143,6 +149,8 @@ def rotate_deepseek_credential(
         raise HTTPException(409, "Credential is not active")
     try:
         _validate_encrypted_binding(vault, row)
+    except CredentialStoreUnavailable:
+        raise HTTPException(503, "Credential vault is unavailable") from None
     except (InvalidToken, ValueError):
         raise HTTPException(409, "Credential binding is invalid") from None
     plaintext_secret = payload.secret.get_secret_value()
@@ -154,8 +162,10 @@ def rotate_deepseek_credential(
         raise HTTPException(400, "Credential metadata contains a raw secret")
     previous_version = row.version
     row.version += 1
-    row.encrypted_secret = _encrypt_envelope(vault, row, plaintext_secret)
-    _attach_binding_ciphertext(vault, row)
+    try:
+        _store_credential(vault, row, plaintext_secret)
+    except CredentialStoreUnavailable:
+        raise HTTPException(503, "Credential vault is unavailable") from None
     row.updated_at = datetime.now(UTC)
     _audit(
         db,
@@ -178,7 +188,7 @@ def revoke_deepseek_credential(
     credential_ref: str,
     project_id: str,
     request: Request,
-    vault: CredentialVault = Depends(get_credential_vault),
+    vault: CredentialStore = Depends(get_credential_vault),
     db: Session = Depends(get_db),
 ) -> DeleteResponse:
     auth = get_auth_context(request)
@@ -189,13 +199,23 @@ def revoke_deepseek_credential(
         raise HTTPException(409, "Credential is not active")
     try:
         _validate_encrypted_binding(vault, row)
+    except CredentialStoreUnavailable:
+        raise HTTPException(503, "Credential vault is unavailable") from None
     except (InvalidToken, ValueError):
         raise HTTPException(409, "Credential binding is invalid") from None
     before = {"status": row.status, "version": row.version}
     row.status = "revoked"
     row.revoked_at = datetime.now(UTC)
     row.updated_at = row.revoked_at
-    _attach_binding_ciphertext(vault, row)
+    try:
+        row.binding_ciphertext = vault.rebind_credential(
+            row.credential_ref,
+            row.encrypted_secret,
+            row.binding_ciphertext,
+            _binding(row),
+        )
+    except (CredentialStoreUnavailable, InvalidToken, ValueError):
+        raise HTTPException(503, "Credential vault is unavailable") from None
     _audit(
         db,
         auth=auth,
@@ -215,7 +235,7 @@ def revoke_deepseek_credential(
 def deepseek_chat_completions(
     payload: DeepSeekChatRequest,
     request: Request,
-    vault: CredentialVault = Depends(get_credential_vault),
+    vault: CredentialStore = Depends(get_credential_vault),
     transport: DeepSeekTransport = Depends(get_deepseek_transport),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
@@ -228,7 +248,7 @@ def deepseek_chat_completions(
         raise HTTPException(400, "Raw credentials are not allowed")
     try:
         _validate_encrypted_binding(vault, row)
-    except (InvalidToken, ValueError, KeyError, TypeError):
+    except (CredentialStoreUnavailable, InvalidToken, ValueError, KeyError, TypeError):
         raise HTTPException(503, "Credential vault is unavailable") from None
     try:
         result = transport.chat_completions(
@@ -238,7 +258,7 @@ def deepseek_chat_completions(
             ),
             **request_body,
         )
-    except InvalidToken:
+    except (CredentialStoreUnavailable, InvalidToken):
         raise HTTPException(503, "Credential vault is unavailable") from None
     except (httpx.HTTPError, ValueError):
         raise HTTPException(502, "DeepSeek request failed") from None
@@ -342,46 +362,26 @@ def _binding(row: ServiceCredential) -> dict[str, Any]:
         "revoked_at": revoked_at.astimezone(UTC).isoformat()
         if revoked_at is not None
         else None,
-        "encrypted_secret_sha256": sha256(
-            row.encrypted_secret.encode("utf-8")
-        ).hexdigest(),
     }
 
 
-def _encrypt_envelope(
-    vault: CredentialVault, row: ServiceCredential, secret: str
-) -> str:
-    return vault.encrypt(secret)
-
-
-def _binding_digest(row: ServiceCredential) -> str:
-    return sha256(
-        json.dumps(
-            _binding(row),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
-
-
-def _encrypt_binding(
-    vault: CredentialVault, row: ServiceCredential
-) -> str:
-    return vault.encrypt(_binding_digest(row))
-
-
-def _attach_binding_ciphertext(
-    vault: CredentialVault, row: ServiceCredential
+def _store_credential(
+    vault: CredentialStore, row: ServiceCredential, secret: str
 ) -> None:
-    row.binding_ciphertext = _encrypt_binding(vault, row)
+    stored = vault.store_credential(row.credential_ref, secret, _binding(row))
+    row.encrypted_secret = stored.secret_ref
+    row.binding_ciphertext = stored.binding_proof
 
 
 def _validate_encrypted_binding(
-    vault: CredentialVault, row: ServiceCredential
+    vault: CredentialStore, row: ServiceCredential
 ) -> None:
-    if vault.decrypt(row.binding_ciphertext) != _binding_digest(row):
-        raise ValueError("credential binding mismatch")
+    vault.resolve_credential(
+        row.credential_ref,
+        row.encrypted_secret,
+        row.binding_ciphertext,
+        _binding(row),
+    )
 
 
 def _audit(

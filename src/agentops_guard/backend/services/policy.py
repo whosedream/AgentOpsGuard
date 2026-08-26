@@ -1,12 +1,16 @@
-﻿from typing import Any
+import hashlib
+import re
+import unicodedata
+from typing import Any
 
-import httpx
+from opentelemetry import trace
 from sqlalchemy.orm import Session
 
 from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.models import ApprovalRequest, PolicyDecision, PolicyPack, Run
 from agentops_guard.backend.schemas import PolicyContext, PolicyDecisionOut
 from agentops_guard.backend.services.content import new_id
+from agentops_guard.backend.services.opa import OpaUnavailable, evaluate_opa
 
 HIGH_RISK_TOOLS = {
     "shell.execute",
@@ -42,23 +46,292 @@ EXFILTRATION_LABELS = {
     "db_url",
 }
 
+INTENT_MANIFEST_KEY = "_guard_user_intent_v1"
+
+ACTION_PRIORITY = {
+    "allow": 0,
+    "rate_limit": 1,
+    "redact": 2,
+    "sandbox": 3,
+    "require_approval": 4,
+    "quarantine": 5,
+    "deny": 6,
+}
+
+USER_ACTION_TERMS = {
+    "write": (
+        "write",
+        "update",
+        "create",
+        "edit",
+        "modify",
+        "set",
+        "add",
+        "change",
+        "写入",
+        "更新",
+        "创建",
+        "编辑",
+        "修改",
+        "设置",
+        "新增",
+        "更改",
+    ),
+    "send": (
+        "send",
+        "upload",
+        "publish",
+        "notify",
+        "发送",
+        "发给",
+        "上传",
+        "发布",
+        "通知",
+    ),
+    "delete": (
+        "delete",
+        "remove",
+        "drop",
+        "destroy",
+        "purge",
+        "clear",
+        "cancel",
+        "删除",
+        "移除",
+        "清空",
+        "取消",
+    ),
+    "payment": (
+        "pay",
+        "purchase",
+        "buy",
+        "transfer",
+        "charge",
+        "refund",
+        "付款",
+        "支付",
+        "购买",
+        "转账",
+        "扣款",
+        "退款",
+    ),
+    "permission": (
+        "grant",
+        "revoke",
+        "invite",
+        "授权",
+        "撤销",
+        "邀请",
+    ),
+}
+
+TOOL_ACTION_TERMS = {
+    "permission": {"grant", "revoke", "invite", "permission", "permissions", "role", "roles"},
+    "payment": {"pay", "payment", "purchase", "buy", "transfer", "charge", "refund"},
+    "delete": {"delete", "remove", "drop", "destroy", "purge", "clear", "cancel"},
+    "send": {"send", "email", "post", "upload", "publish", "message", "notify"},
+    "write": {
+        "write",
+        "update",
+        "create",
+        "edit",
+        "modify",
+        "set",
+        "add",
+        "patch",
+        "put",
+        "rename",
+        "move",
+    },
+}
+
+TARGET_ARGUMENT_KEYS = {
+    "account",
+    "account_id",
+    "channel",
+    "channel_id",
+    "destination",
+    "email",
+    "endpoint",
+    "file",
+    "file_path",
+    "path",
+    "recipient",
+    "recipients",
+    "role",
+    "target",
+    "to",
+    "uri",
+    "url",
+    "user_id",
+    "webhook",
+}
+
+INTENT_TARGET_PATTERN = re.compile(
+    r"https?://[^\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|"
+    r"(?:[A-Za-z]:\\|/)[^\s]+|[\w.-]{3,}",
+    re.UNICODE,
+)
+
+
+def _normalize_intent_value(value: str) -> str:
+    return unicodedata.normalize("NFKC", value).casefold().strip()
+
+
+def _intent_value_hash(value: str) -> str:
+    return hashlib.sha256(_normalize_intent_value(value).encode("utf-8")).hexdigest()
+
+
+def _contains_action_term(text: str, term: str) -> bool:
+    if term.isascii():
+        return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text) is not None
+    return term in text
+
+
+def build_user_intent_manifest(text: str | None) -> dict[str, Any]:
+    normalized = _normalize_intent_value(text or "")
+    actions = sorted(
+        action
+        for action, terms in USER_ACTION_TERMS.items()
+        if any(_contains_action_term(normalized, term) for term in terms)
+    )
+    target_hashes = sorted(
+        {
+            _intent_value_hash(match.group(0).rstrip(".,;:!?)]}"))
+            for match in INTENT_TARGET_PATTERN.finditer(normalized)
+        }
+    )
+    return {
+        "version": 1,
+        "present": bool(normalized),
+        "actions": actions,
+        "target_hashes": target_hashes,
+    }
+
+
+def _tool_actions(
+    tool_name: str, annotations: dict[str, Any], server_trust_level: str
+) -> list[str]:
+    actions: set[str] = set()
+    if annotations.get("destructiveHint") is True:
+        actions.add("delete")
+    tokens = set(re.split(r"[^a-z0-9]+", tool_name.casefold()))
+    for action, terms in TOOL_ACTION_TERMS.items():
+        if tokens & terms:
+            actions.add(action)
+    if not actions and server_trust_level == "external":
+        actions.add("external_unknown")
+    if len(actions) > 1:
+        actions.discard("write")
+    return sorted(actions)
+
+
+def _target_argument_values(arguments: dict[str, Any]) -> tuple[list[str], list[str]]:
+    fields: set[str] = set()
+    values: list[str] = []
+
+    def visit(value: Any, key: str | None = None) -> None:
+        normalized_key = re.sub(r"(?<!^)(?=[A-Z])", "_", key or "").replace("-", "_").casefold()
+        is_target = normalized_key in TARGET_ARGUMENT_KEYS or normalized_key.endswith(
+            (
+                "_account",
+                "_channel",
+                "_destination",
+                "_email",
+                "_file",
+                "_id",
+                "_path",
+                "_recipient",
+                "_role",
+                "_target",
+                "_uri",
+                "_url",
+                "_webhook",
+            )
+        )
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                visit(child_value, str(child_key))
+        elif isinstance(value, list):
+            for item in value:
+                visit(item, key)
+        elif is_target and isinstance(value, str | int | float):
+            fields.add(normalized_key)
+            values.append(str(value))
+
+    visit(arguments)
+    return sorted(fields), values
+
+
+def assess_tool_action_alignment(
+    tool_name: str,
+    arguments: dict[str, Any],
+    annotations: dict[str, Any],
+    intent_manifest: dict[str, Any] | None,
+    server_trust_level: str = "internal",
+) -> dict[str, Any]:
+    actions = _tool_actions(tool_name, annotations, server_trust_level)
+    target_fields, target_values = _target_argument_values(arguments)
+    manifest = intent_manifest or {}
+    known_target_hashes = set(manifest.get("target_hashes") or [])
+    action_aligned = not actions or set(actions).issubset(set(manifest.get("actions") or []))
+    target_aligned = (not arguments and not target_values) or (
+        bool(target_values)
+        and all(_intent_value_hash(value) in known_target_hashes for value in target_values)
+    )
+    required = bool(actions)
+    return {
+        "required": required,
+        "action": actions[0] if len(actions) == 1 else None,
+        "actions": actions,
+        "intent_present": bool(manifest.get("present")),
+        "action_aligned": action_aligned,
+        "target_aligned": target_aligned,
+        "aligned": not required
+        or (bool(manifest.get("present")) and action_aligned and target_aligned),
+        "target_fields": target_fields,
+    }
+
 
 def _tool_name(context: PolicyContext) -> str:
     return str(context.tool.get("name") or context.tool.get("id") or "")
 
 
 def evaluate_policy(context: PolicyContext, db: Session | None = None) -> PolicyDecisionOut:
-    opa_decision = _evaluate_opa(context)
-    if opa_decision is not None:
-        return opa_decision
-    pack_decision = _evaluate_policy_packs(context, db)
-    if pack_decision is not None:
-        return pack_decision
-    return evaluate_builtin_policy(context)
+    tracer = trace.get_tracer("agentops_guard.policy")
+    with tracer.start_as_current_span("policy.evaluate") as span:
+        hard_decision = _evaluate_hard_boundary(context)
+        if hard_decision is not None:
+            decision = hard_decision
+        else:
+            decisions: list[PolicyDecisionOut] = []
+            opa_decision = _evaluate_opa(context)
+            if opa_decision is not None:
+                decisions.append(opa_decision)
+            pack_decision = _evaluate_policy_packs(context, db)
+            if pack_decision is not None:
+                decisions.append(pack_decision)
+            decisions.append(_evaluate_builtin_soft_policy(context))
+            decision = max(
+                decisions,
+                key=lambda candidate: ACTION_PRIORITY[candidate.action],
+            )
+        span.set_attribute("agentops.policy.action", decision.action)
+        span.set_attribute(
+            "agentops.risk.level",
+            "high" if context.risk_score >= 0.7 else "medium" if context.risk_score >= 0.4 else "low",
+        )
+        return decision
 
 
 def evaluate_builtin_policy(context: PolicyContext) -> PolicyDecisionOut:
-    tool_name = _tool_name(context)
+    hard_decision = _evaluate_hard_boundary(context)
+    if hard_decision is not None:
+        return hard_decision
+    return _evaluate_builtin_soft_policy(context)
+
+
+def _evaluate_hard_boundary(context: PolicyContext) -> PolicyDecisionOut | None:
     command = str(context.tool.get("command") or context.tool.get("args", {}).get("command", ""))
     labels = set(context.risk_labels) | set(context.data.get("labels", []))
     actor = context.actor.get("agent_id") or context.actor.get("role")
@@ -103,6 +376,35 @@ def evaluate_builtin_policy(context: PolicyContext) -> PolicyDecisionOut:
             remediation="Replace the command with a scoped, reversible operation.",
             context=context.model_dump(),
         )
+
+    alignment = context.data.get("action_alignment") or {}
+    if alignment.get("required") and not alignment.get("aligned"):
+        if "external_unknown" in (alignment.get("actions") or []):
+            reason_code = "unreviewed_external_tool"
+            remediation = "Review the external tool and mark its server internal before automatic execution."
+        elif not alignment.get("intent_present"):
+            reason_code = "trusted_user_intent_required"
+            remediation = "Bind the tool call to a run containing the original user request."
+        elif not alignment.get("action_aligned"):
+            reason_code = "tool_action_not_authorized"
+            remediation = "Ask the user to authorize this action explicitly."
+        else:
+            reason_code = "tool_target_not_authorized"
+            remediation = "Ask the user to authorize the exact tool target explicitly."
+        return PolicyDecisionOut(
+            action="require_approval",
+            reason_code=reason_code,
+            severity="high",
+            matched_policy="tool_action_alignment",
+            remediation=remediation,
+            context=context.model_dump(),
+        )
+
+    return None
+
+
+def _evaluate_builtin_soft_policy(context: PolicyContext) -> PolicyDecisionOut:
+    tool_name = _tool_name(context)
 
     if tool_name in HIGH_RISK_TOOLS or context.risk_score >= 0.7:
         return PolicyDecisionOut(
@@ -209,6 +511,8 @@ def _evaluate_pack_rule(context: PolicyContext, pack: PolicyPack, rule: dict[str
     if not _conditions_match(context, conditions):
         return None
     action = str(rule.get("action") or "deny")
+    if action not in ACTION_PRIORITY:
+        raise ValueError(f"Unsupported policy action: {action}")
     return PolicyDecisionOut(
         action=action,
         reason_code=str(rule.get("reason_code") or rule.get("id") or "policy_pack_match"),
@@ -250,27 +554,47 @@ def _evaluate_opa(context: PolicyContext) -> PolicyDecisionOut | None:
     if not settings.opa_url:
         return None
     try:
-        response = httpx.post(
-            f"{settings.opa_url.rstrip('/')}/v1/data/agentops/guard/decision",
-            json={"input": context.model_dump()},
-            timeout=2.0,
-        )
-        response.raise_for_status()
-        result = response.json().get("result")
-    except httpx.HTTPError:
-        return None
-    if not isinstance(result, dict):
-        return None
-    return _decision_from_opa_result(result, context)
+        return _decision_from_opa_result(evaluate_opa(context.model_dump()), context)
+    except OpaUnavailable:
+        return _opa_failure_decision(context, settings.policy_fail_mode)
 
 
 def _decision_from_opa_result(result: dict[str, Any], context: PolicyContext) -> PolicyDecisionOut:
     action = str(result.get("action") or ("allow" if result.get("allow", True) else "deny"))
+    if action not in ACTION_PRIORITY:
+        raise OpaUnavailable("OPA returned an unsupported action")
     return PolicyDecisionOut(
         action=action,
         reason_code=str(result.get("reason_code") or "opa_decision"),
         severity=str(result.get("severity") or "low"),
         matched_policy=str(result.get("matched_policy") or "opa"),
         remediation=result.get("remediation"),
-        context=context.model_dump(),
+        context={
+            **context.model_dump(),
+            "policy_provider": "opa",
+            "policy_revision": result.get("policy_revision"),
+        },
+    )
+
+
+def _opa_failure_decision(
+    context: PolicyContext, fail_mode: str
+) -> PolicyDecisionOut | None:
+    if fail_mode == "open":
+        return None
+    high_risk = (
+        _tool_name(context) in HIGH_RISK_TOOLS
+        or context.risk_score >= 0.4
+        or bool((context.data.get("action_alignment") or {}).get("required"))
+    )
+    if fail_mode == "closed_for_high_risk" and not high_risk:
+        return None
+    action = "deny" if fail_mode == "closed" else "require_approval"
+    return PolicyDecisionOut(
+        action=action,
+        reason_code="opa_unavailable",
+        severity="high",
+        matched_policy="opa_fail_mode",
+        remediation="Restore the OPA policy service before retrying this action.",
+        context={**context.model_dump(), "policy_provider": "opa", "provider_status": "error"},
     )

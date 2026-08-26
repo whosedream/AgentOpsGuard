@@ -38,8 +38,8 @@ probes:
     readinessPath: /readyz
     livenessPath: /healthz
   gateway:
-    readinessPath: /mcp/tools/list
-    livenessPath: /mcp/tools/list
+    readinessPath: /readyz
+    livenessPath: /healthz
   dashboard:
     readinessPath: /setup
     livenessPath: /setup
@@ -58,3 +58,33 @@ extraEnv: {}
 credentialEncryption:
   existingSecret: ""
   key: AGENTOPS_CREDENTIAL_ENCRYPTION_KEY
+
+credentialStore:
+  backend: fernet
+  openbaoUrl: ""
+  openbaoExistingSecret: ""
+  openbaoTokenKey: AGENTOPS_OPENBAO_TOKEN
+  openbaoKvMount: secret
+  openbaoTimeoutSeconds: 5
+
+semanticScanner:
+  mode: disabled
+  modelPath: /models/semantic-guard
+  modelSha256: ""
+  threshold: 0.90
+  hostPath: ""
+
+opa:
+  enabled: false
+  image:
+    repository: openpolicyagent/opa
+    tag: 1.8.0-debug
+    pullPolicy: IfNotPresent
+  timeoutSeconds: 2
+  policyFailMode: closed_for_high_risk
+  resources: {}
+
+telemetry:
+  enabled: false
+  otlpEndpoint: http://otel-collector.observability.svc:4317
+  traceSampleRatio: 1.0

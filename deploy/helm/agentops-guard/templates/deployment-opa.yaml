@@ -1,0 +1,41 @@
+{{- if .Values.opa.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentops-guard.name" . }}-opa
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agentops-guard-opa
+  template:
+    metadata:
+      labels:
+        app: agentops-guard-opa
+    spec:
+      containers:
+        - name: opa
+          image: "{{ .Values.opa.image.repository }}:{{ .Values.opa.image.tag }}"
+          imagePullPolicy: {{ .Values.opa.image.pullPolicy }}
+          args: ["run", "--server", "--addr=0.0.0.0:8181", "--log-format=json", "/policies"]
+          ports:
+            - containerPort: 8181
+          volumeMounts:
+            - name: policy
+              mountPath: /policies
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health?bundles=true&plugins=true
+              port: 8181
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+          resources:
+            {{- toYaml .Values.opa.resources | nindent 12 }}
+      volumes:
+        - name: policy
+          configMap:
+            name: {{ include "agentops-guard.name" . }}-opa-policy
+{{- end }}

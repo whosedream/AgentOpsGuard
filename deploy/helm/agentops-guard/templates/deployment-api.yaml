@@ -28,14 +28,47 @@ spec:
                 name: {{ include "agentops-guard.name" . }}-config
             - secretRef:
                 name: {{ include "agentops-guard.name" . }}-secret
-          {{- if .Values.credentialEncryption.existingSecret }}
           env:
+            - name: AGENTOPS_CREDENTIAL_STORE
+              value: {{ .Values.credentialStore.backend | quote }}
+            {{- if .Values.credentialEncryption.existingSecret }}
             - name: AGENTOPS_CREDENTIAL_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.credentialEncryption.existingSecret | quote }}
                   key: {{ .Values.credentialEncryption.key | quote }}
-          {{- end }}
+            {{- end }}
+            {{- if eq .Values.credentialStore.backend "openbao" }}
+            - name: AGENTOPS_OPENBAO_URL
+              value: {{ required "credentialStore.openbaoUrl is required for OpenBao" .Values.credentialStore.openbaoUrl | quote }}
+            - name: AGENTOPS_OPENBAO_KV_MOUNT
+              value: {{ .Values.credentialStore.openbaoKvMount | quote }}
+            - name: AGENTOPS_OPENBAO_TIMEOUT_SECONDS
+              value: {{ .Values.credentialStore.openbaoTimeoutSeconds | quote }}
+            - name: AGENTOPS_OPENBAO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "credentialStore.openbaoExistingSecret is required for OpenBao" .Values.credentialStore.openbaoExistingSecret | quote }}
+                  key: {{ .Values.credentialStore.openbaoTokenKey | quote }}
+            {{- end }}
+            {{- if .Values.opa.enabled }}
+            - name: AGENTOPS_OPA_URL
+              value: "http://{{ include "agentops-guard.name" . }}-opa:8181"
+            - name: AGENTOPS_OPA_TIMEOUT_SECONDS
+              value: {{ .Values.opa.timeoutSeconds | quote }}
+            - name: AGENTOPS_POLICY_FAIL_MODE
+              value: {{ .Values.opa.policyFailMode | quote }}
+            {{- end }}
+            {{- if .Values.telemetry.enabled }}
+            - name: AGENTOPS_OTEL_ENABLED
+              value: "true"
+            - name: AGENTOPS_OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.telemetry.otlpEndpoint | quote }}
+            - name: AGENTOPS_OTEL_SERVICE_NAME
+              value: agentops-guard-api
+            - name: AGENTOPS_OTEL_TRACE_SAMPLE_RATIO
+              value: {{ .Values.telemetry.traceSampleRatio | quote }}
+            {{- end }}
           ports:
             - containerPort: 8000
           readinessProbe:

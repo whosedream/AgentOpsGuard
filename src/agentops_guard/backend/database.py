@@ -90,3 +90,12 @@ def _apply_dev_bootstrap_fixes() -> None:
             columns = {column["name"] for column in inspector.get_columns("sessions")}
             if "token_hash" not in columns:
                 connection.execute(text("ALTER TABLE sessions ADD COLUMN token_hash VARCHAR(128) DEFAULT ''"))
+        if "mcp_servers" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("mcp_servers")}
+            if "runtime_provider" not in columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE mcp_servers ADD COLUMN runtime_provider "
+                        "VARCHAR(32) DEFAULT 'direct'"
+                    )
+                )

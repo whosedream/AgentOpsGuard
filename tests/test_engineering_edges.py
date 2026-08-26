@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from agentops_guard.backend.database import Base
 from agentops_guard.backend.services.api_keys import authenticate_api_key, create_api_key
-from agentops_guard.gateway.transports.streamable_http import StreamableHttpTransport
+from agentops_guard.gateway.transports.legacy_http import LegacyHttpTransport
 
 
 def test_api_key_expired_and_revoked_edges():
@@ -28,13 +28,13 @@ def test_api_key_expired_and_revoked_edges():
         assert expired.id.startswith("key_")
 
 
-def test_streamable_http_transport_success_paths():
+def test_legacy_http_transport_success_paths():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/tools/list"):
             return httpx.Response(200, json={"tools": [{"name": "http.echo"}]})
         return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}]})
 
-    transport = StreamableHttpTransport("http://mcp.test")
+    transport = LegacyHttpTransport("http://mcp.test")
     client = httpx.Client(transport=httpx.MockTransport(handler))
     original_get = httpx.get
     original_post = httpx.post
@@ -47,4 +47,3 @@ def test_streamable_http_transport_success_paths():
         httpx.get = original_get
         httpx.post = original_post
         client.close()
-

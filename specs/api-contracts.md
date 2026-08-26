@@ -141,8 +141,10 @@ Returns `McpServerOut[]`, newest first for the requested `project_id`. Each item
 
 ### PATCH /v1/mcp/servers/{id}
 
-Request accepts partial server fields: `name`, `transport`, `command`, `args`, `url`, `trust_level`, `allowed_agents`, `status`.
+Request accepts partial server fields: `name`, `transport`, `runtime_provider`, `command`, `args`, `url`, `trust_level`, `allowed_agents`, `status`.
 `status` accepts only `active`, `quarantined`, `disabled`, and `error`; invalid values return `422`.
+`runtime_provider` accepts `direct` or `toolhive`. A ToolHive-backed server must also use
+`transport=streamable_http`, a URL, and `trust_level=sandboxed`; weaker combinations return `422`.
 Returns `McpServerOut`.
 
 ### DELETE /v1/mcp/servers/{id}
@@ -162,6 +164,13 @@ Returns cached `McpToolOut[]`, newest first for the requested `project_id`. Each
 ## Scanner, Policy, Gateway
 
 Existing scanner and policy request/response contracts are unchanged. Gateway endpoints must allow browser CORS and return JSON for tools list, tool call, resource read, and prompt get.
+
+`POST /mcp/tools/call` accepts optional `runId`. For send, write, delete, payment, and permission
+actions, the Gateway compares the tool action and target fields with the intent manifest derived
+from the server-stored run input. Missing or mismatched authorization returns
+`require_approval` and does not call the upstream tool. Caller-supplied intent text is not an
+authorization source. An external tool whose action cannot be classified also requires approval;
+automatic execution requires an administrator-reviewed internal server.
 
 
 ## Operations Hardening

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 
 def _validate_outbound_secret(value: SecretStr) -> SecretStr:
@@ -200,6 +200,14 @@ class EvidenceSpan(BaseModel):
     snippet: str
 
 
+class SemanticAssessment(BaseModel):
+    status: Literal["ok", "error"]
+    mode: Literal["shadow", "enforce"]
+    label: Literal["benign", "prompt_injection"] | None = None
+    score: float | None = None
+    model: str
+
+
 class ScanResponse(BaseModel):
     risk_score: float
     risk_labels: list[str]
@@ -207,6 +215,7 @@ class ScanResponse(BaseModel):
     sanitized_content_ref: str | None = None
     sanitized_text: str
     severity: str
+    semantic_assessment: SemanticAssessment | None = Field(default=None, exclude=True)
 
 
 class OrganizationCreate(BaseModel):
@@ -511,12 +520,25 @@ class McpServerConfig(BaseModel):
     id: str | None = None
     project_id: str = "default"
     name: str
-    transport: Literal["stdio", "streamable_http"]
+    transport: Literal["stdio", "streamable_http", "legacy_http"]
+    runtime_provider: Literal["direct", "toolhive"] = "direct"
     command: str | None = None
     args: list[str] = Field(default_factory=list)
     url: str | None = None
     trust_level: Literal["internal", "external", "sandboxed"] = "external"
     allowed_agents: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_runtime_provider(self) -> "McpServerConfig":
+        if self.runtime_provider == "toolhive" and (
+            self.transport != "streamable_http"
+            or not self.url
+            or self.trust_level != "sandboxed"
+        ):
+            raise ValueError(
+                "ToolHive servers require streamable_http, a URL, and sandboxed trust"
+            )
+        return self
 
 
 class McpServerOut(McpServerConfig):
@@ -541,7 +563,8 @@ class McpToolOut(BaseModel):
 
 class McpServerUpdate(BaseModel):
     name: str | None = None
-    transport: Literal["stdio", "streamable_http"] | None = None
+    transport: Literal["stdio", "streamable_http", "legacy_http"] | None = None
+    runtime_provider: Literal["direct", "toolhive"] | None = None
     command: str | None = None
     args: list[str] | None = None
     url: str | None = None

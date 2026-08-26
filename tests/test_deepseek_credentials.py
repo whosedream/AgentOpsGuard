@@ -27,22 +27,22 @@ FERNET_KEY = base64.urlsafe_b64encode(b"agentops-guard-test-fernet-key!!").decod
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 
 
-class RecordingVault:
+class RecordingVault(CredentialVault):
     def __init__(self) -> None:
-        self._vault = CredentialVault(key=FERNET_KEY)
+        super().__init__(key=FERNET_KEY)
         self.encrypt_calls: list[str] = []
         self.decrypt_calls: list[str] = []
         self.decrypt_error: Exception | None = None
 
     def encrypt(self, secret: str) -> str:
         self.encrypt_calls.append(secret)
-        return self._vault.encrypt(secret)
+        return super().encrypt(secret)
 
     def decrypt(self, ciphertext: str) -> str:
         self.decrypt_calls.append(ciphertext)
         if self.decrypt_error is not None:
             raise self.decrypt_error
-        return self._vault.decrypt(ciphertext)
+        return super().decrypt(ciphertext)
 
 
 class RecordingTransport:

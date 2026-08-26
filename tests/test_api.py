@@ -1,4 +1,4 @@
-﻿from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient
 
 from agentops_guard.backend.main import app
 
@@ -45,6 +45,44 @@ def test_create_run_event_and_dag():
     dag = dag_response.json()
     assert len(dag["nodes"]) == 2
     assert dag["edges"] == [{"source": "span_root", "target": "span_tool"}]
+
+
+def test_run_records_only_derived_action_intent_metadata():
+    target = "finance-team@example.com"
+    response = client.post(
+        "/v1/runs",
+        headers=headers,
+        json={
+            "project_id": "intent_manifest",
+            "agent_id": "test-agent",
+            "input": {"text": f"请发送月报给 {target}"},
+            "metadata": {"_guard_user_intent_v1": {"actions": ["delete"]}},
+        },
+    )
+
+    assert response.status_code == 200
+    manifest = response.json()["metadata"]["_guard_user_intent_v1"]
+    assert manifest["actions"] == ["send"]
+    assert manifest["present"] is True
+    assert manifest["target_hashes"]
+    assert target not in str(manifest)
+
+    update = client.patch(
+        f"/v1/runs/{response.json()['id']}",
+        headers=headers,
+        json={
+            "metadata": {
+                "_guard_user_intent_v1": {
+                    "present": True,
+                    "actions": ["delete"],
+                    "target_hashes": [],
+                }
+            }
+        },
+    )
+
+    assert update.status_code == 200
+    assert update.json()["metadata"]["_guard_user_intent_v1"] == manifest
 
 
 def test_scanner_api_creates_risk():

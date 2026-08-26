@@ -298,6 +298,7 @@ class McpServer(Base):
     project_id: Mapped[str] = mapped_column(String(64), index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     transport: Mapped[str] = mapped_column(String(64), nullable=False)
+    runtime_provider: Mapped[str] = mapped_column(String(32), default="direct")
     command: Mapped[str | None] = mapped_column(String(512))
     args: Mapped[list] = mapped_column(JSON, default=list)
     url: Mapped[str | None] = mapped_column(String(512))

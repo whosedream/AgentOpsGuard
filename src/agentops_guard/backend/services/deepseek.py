@@ -3,6 +3,8 @@ from typing import Any
 
 import httpx
 
+from agentops_guard.backend.telemetry import inject_trace_headers
+
 DEEPSEEK_CHAT_COMPLETIONS_URL = "https://api.deepseek.com/chat/completions"
 
 
@@ -26,6 +28,8 @@ class DeepSeekTransport:
         if _contains_exact_secret(body, secret):
             raise ValueError("request contains a managed credential")
         authorization = f"Bearer {secret}"
+        headers = {"Authorization": authorization}
+        inject_trace_headers(headers)
         if self._client is None:
             with httpx.Client(
                 timeout=30.0,
@@ -34,14 +38,14 @@ class DeepSeekTransport:
             ) as client:
                 response = client.post(
                     DEEPSEEK_CHAT_COMPLETIONS_URL,
-                    headers={"Authorization": authorization},
+                    headers=headers,
                     json=body,
                 )
         else:
             request = self._client.build_request(
                 "POST",
                 DEEPSEEK_CHAT_COMPLETIONS_URL,
-                headers={"Authorization": authorization},
+                headers=headers,
                 json=body,
             )
             response = self._client.send(request, follow_redirects=False)
