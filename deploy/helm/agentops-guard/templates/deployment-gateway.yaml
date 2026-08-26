@@ -22,15 +22,66 @@ spec:
                 name: {{ include "agentops-guard.name" . }}-config
             - secretRef:
                 name: {{ include "agentops-guard.name" . }}-secret
+          env:
+            - name: AGENTOPS_SEMANTIC_SCANNER_MODE
+              value: {{ .Values.semanticScanner.mode | quote }}
+            - name: AGENTOPS_SEMANTIC_MODEL_PATH
+              value: {{ .Values.semanticScanner.modelPath | quote }}
+            - name: AGENTOPS_SEMANTIC_MODEL_SHA256
+              value: {{ .Values.semanticScanner.modelSha256 | quote }}
+            - name: AGENTOPS_SEMANTIC_SCANNER_THRESHOLD
+              value: {{ .Values.semanticScanner.threshold | quote }}
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+            {{- if .Values.opa.enabled }}
+            - name: AGENTOPS_OPA_URL
+              value: "http://{{ include "agentops-guard.name" . }}-opa:8181"
+            - name: AGENTOPS_OPA_TIMEOUT_SECONDS
+              value: {{ .Values.opa.timeoutSeconds | quote }}
+            - name: AGENTOPS_POLICY_FAIL_MODE
+              value: {{ .Values.opa.policyFailMode | quote }}
+            {{- end }}
+            {{- if .Values.telemetry.enabled }}
+            - name: AGENTOPS_OTEL_ENABLED
+              value: "true"
+            - name: AGENTOPS_OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.telemetry.otlpEndpoint | quote }}
+            - name: AGENTOPS_OTEL_SERVICE_NAME
+              value: agentops-guard-gateway
+            - name: AGENTOPS_OTEL_TRACE_SAMPLE_RATIO
+              value: {{ .Values.telemetry.traceSampleRatio | quote }}
+            {{- end }}
+          {{- if .Values.semanticScanner.hostPath }}
+          volumeMounts:
+            - name: semantic-guard-model
+              mountPath: {{ .Values.semanticScanner.modelPath | quote }}
+              readOnly: true
+          {{- end }}
           ports:
             - containerPort: 8001
           readinessProbe:
             httpGet:
               path: {{ .Values.probes.gateway.readinessPath }}
               port: 8001
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.gateway.readinessPath }}
+              port: 8001
+            periodSeconds: 5
+            timeoutSeconds: 15
+            failureThreshold: 12
           livenessProbe:
             httpGet:
               path: {{ .Values.probes.gateway.livenessPath }}
               port: 8001
           resources:
             {{- toYaml .Values.resources.gateway | nindent 12 }}
+      {{- if .Values.semanticScanner.hostPath }}
+      volumes:
+        - name: semantic-guard-model
+          hostPath:
+            path: {{ .Values.semanticScanner.hostPath | quote }}
+            type: Directory
+      {{- end }}

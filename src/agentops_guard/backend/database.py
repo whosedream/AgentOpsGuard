@@ -78,7 +78,24 @@ def _should_bootstrap_schema(runtime_settings) -> bool:
 def _apply_dev_bootstrap_fixes() -> None:
     with engine.begin() as connection:
         inspector = inspect(connection)
+        if "projects" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("projects")}
+            if "organization_id" not in columns:
+                connection.execute(text("ALTER TABLE projects ADD COLUMN organization_id VARCHAR(64) DEFAULT ''"))
         if "policy_packs" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("policy_packs")}
             if "family_id" not in columns:
                 connection.execute(text("ALTER TABLE policy_packs ADD COLUMN family_id VARCHAR(64) DEFAULT ''"))
+        if "sessions" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("sessions")}
+            if "token_hash" not in columns:
+                connection.execute(text("ALTER TABLE sessions ADD COLUMN token_hash VARCHAR(128) DEFAULT ''"))
+        if "mcp_servers" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("mcp_servers")}
+            if "runtime_provider" not in columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE mcp_servers ADD COLUMN runtime_provider "
+                        "VARCHAR(32) DEFAULT 'direct'"
+                    )
+                )

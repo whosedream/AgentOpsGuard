@@ -1,3 +1,16 @@
+export {
+  canAccessPolicy,
+  canAccessScanner,
+  canCreateReplay,
+  canManageGovernance,
+  canManageMcp,
+  canReadGovernance,
+  canReadRawContent,
+  canRunEval,
+  canTestMcp,
+  hasCapability,
+} from "./auth";
+
 export function apiBase(): string {
   if (typeof window !== "undefined") {
     return window.localStorage.getItem("apiBase") ?? "/api/backend";
@@ -9,7 +22,7 @@ export function gatewayBase(): string {
   if (typeof window !== "undefined") {
     return window.localStorage.getItem("gatewayBase") ?? "/api/gateway";
   }
-  return process.env.NEXT_PUBLIC_AGENTOPS_GATEWAY_URL ?? "http://localhost:8001";
+  return "/api/gateway";
 }
 
 async function request<T>(base: string, path: string, init: RequestInit = {}): Promise<T> {
@@ -51,6 +64,20 @@ export async function gatewayPost<T>(path: string, body?: unknown): Promise<T> {
 
 export type AuthContext = {
   kind: string;
+  user?: {
+    id: string;
+    email: string;
+    display_name: string;
+  } | null;
+  organization_id?: string | null;
+  memberships: Array<{
+    id: string;
+    organization_id: string;
+    role: string;
+    status: string;
+  }>;
+  active_membership_id?: string | null;
+  active_role?: string | null;
   project_id?: string | null;
   scopes: string[];
   capabilities: string[];
@@ -281,11 +308,4 @@ export type McpServer = { id: string; project_id: string; name: string; transpor
 export type McpTool = { name: string; serverId?: string; server_id?: string; description?: string; riskScore?: number; risk_score?: number; riskLabels?: string[]; risk_labels?: string[]; status?: string };
 export type Job = { id: string; project_id: string; kind: string; status: string; rq_job_id?: string | null; payload: Record<string, unknown>; result?: Record<string, unknown> | null; error?: string | null; attempts: number; created_at: string; started_at?: string | null; finished_at?: string | null };
 
-export function canManageGovernance(auth: AuthContext): boolean {
-  return auth.is_operator || auth.capabilities.includes("policies:admin") || auth.capabilities.includes("admin:*");
-}
-
-export function canManageMcp(auth: AuthContext): boolean {
-  return auth.is_operator || auth.capabilities.includes("mcp:admin") || auth.capabilities.includes("admin:*");
-}
 

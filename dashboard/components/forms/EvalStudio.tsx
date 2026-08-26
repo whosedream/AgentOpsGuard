@@ -1,11 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
+
 import { apiGet, apiPost, EvalRun, EvalSuite, Job, Page, pageItems, pollJob } from "../../lib/api";
+import { canRunEval } from "../../lib/auth";
 import { safeJson } from "../../lib/payloads";
+import { useDashboardAuth } from "../auth/AuthProvider";
 import { ErrorState, LoadingState } from "../ui/States";
 
 export function EvalStudio() {
+  const auth = useDashboardAuth();
   const [suites, setSuites] = useState<EvalSuite[]>([]);
   const [runs, setRuns] = useState<EvalRun[]>([]);
   const [name, setName] = useState("UI Suite");
@@ -14,23 +18,27 @@ export function EvalStudio() {
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const projectId = auth.project_id ?? "default";
+  const canWrite = canRunEval(auth);
 
   async function load() {
-    const loadedSuites = await apiGet<EvalSuite[]>("/v1/eval-suites").catch(() => []);
+    const loadedSuites = await apiGet<EvalSuite[]>(`/v1/eval-suites?project_id=${encodeURIComponent(projectId)}`).catch(() => []);
     setSuites(loadedSuites);
     setSelectedSuite((current) => loadedSuites.find((suite) => suite.id === current)?.id ?? loadedSuites[0]?.id ?? current);
-    setRuns(pageItems(await apiGet<EvalRun[] | Page<EvalRun>>("/v1/eval-runs?page_mode=envelope").catch(() => [] as EvalRun[])));
+    setRuns(pageItems(await apiGet<EvalRun[] | Page<EvalRun>>(`/v1/eval-runs?project_id=${encodeURIComponent(projectId)}&page_mode=envelope`).catch(() => [] as EvalRun[])));
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [projectId]);
 
   async function createSuite() {
-    const created = await apiPost<EvalSuite>("/v1/eval-suites", { name, project_id: "default", cases: safeJson(cases, []) });
+    if (!canWrite) return;
+    const created = await apiPost<EvalSuite>("/v1/eval-suites", { name, project_id: projectId, cases: safeJson(cases, []) });
     setSuites([created, ...suites]);
     setSelectedSuite(created.id);
   }
 
   async function runSuite() {
+    if (!canWrite) return;
     const suiteId = selectedSuite || suites[0]?.id;
     if (!suiteId) return;
     setLoading(true);
@@ -55,9 +63,10 @@ export function EvalStudio() {
         <label className="mt-4 block text-sm font-semibold text-slate-300">Cases JSON</label>
         <textarea value={cases} onChange={(event) => setCases(event.target.value)} className="mt-2 min-h-36 w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-sm" />
         <div className="mt-4 flex gap-3">
-          <button onClick={createSuite} className="rounded-xl border border-cyan-300/30 px-4 py-2 text-cyan-200">Create suite</button>
-          <button onClick={runSuite} className="rounded-xl bg-cyan-300 px-4 py-2 font-semibold text-slate-950">Run suite job</button>
+          <button onClick={createSuite} disabled={!canWrite} className="rounded-xl border border-cyan-300/30 px-4 py-2 text-cyan-200 disabled:opacity-50">Create suite</button>
+          <button onClick={runSuite} disabled={!canWrite} className="rounded-xl bg-cyan-300 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50">Run suite job</button>
         </div>
+        {!canWrite ? <div className="mt-3 text-sm text-slate-500">Eval execution requires developer access or higher.</div> : null}
         <select value={selectedSuite} onChange={(event) => setSelectedSuite(event.target.value)} className="mt-4 w-full rounded-xl border border-white/10 bg-slate-950 p-3">
           {suites.map((suite) => <option key={suite.id} value={suite.id}>{suite.name}</option>)}
         </select>

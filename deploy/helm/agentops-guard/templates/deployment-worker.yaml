@@ -22,5 +22,26 @@ spec:
                 name: {{ include "agentops-guard.name" . }}-config
             - secretRef:
                 name: {{ include "agentops-guard.name" . }}-secret
+          {{- if or .Values.opa.enabled .Values.telemetry.enabled }}
+          env:
+            {{- if .Values.opa.enabled }}
+            - name: AGENTOPS_OPA_URL
+              value: "http://{{ include "agentops-guard.name" . }}-opa:8181"
+            - name: AGENTOPS_OPA_TIMEOUT_SECONDS
+              value: {{ .Values.opa.timeoutSeconds | quote }}
+            - name: AGENTOPS_POLICY_FAIL_MODE
+              value: {{ .Values.opa.policyFailMode | quote }}
+            {{- end }}
+            {{- if .Values.telemetry.enabled }}
+            - name: AGENTOPS_OTEL_ENABLED
+              value: "true"
+            - name: AGENTOPS_OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.telemetry.otlpEndpoint | quote }}
+            - name: AGENTOPS_OTEL_SERVICE_NAME
+              value: agentops-guard-worker
+            - name: AGENTOPS_OTEL_TRACE_SAMPLE_RATIO
+              value: {{ .Values.telemetry.traceSampleRatio | quote }}
+            {{- end }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources.worker | nindent 12 }}

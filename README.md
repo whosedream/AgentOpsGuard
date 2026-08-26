@@ -100,9 +100,43 @@ See `docs/sdk.md` for the Python SDK quickstart, trace/span usage, scanner/polic
 - `AGENTOPS_ALLOW_SCHEMA_BOOTSTRAP`: Only enable for local SQLite development bootstrap.
 - `AGENTOPS_STORE_RAW_CONTENT`: Set to `true` only when full replay requires raw prompt/tool content.
 - `AGENTOPS_POLICY_FAIL_MODE`: Default `closed_for_high_risk`.
+- `AGENTOPS_OPA_URL`: Optional OPA base URL. When configured, API and Gateway readiness require
+  OPA health. Compose configures the bundled OPA service automatically.
+- `AGENTOPS_OPA_TIMEOUT_SECONDS`: OPA request timeout. Default `2` seconds.
 - `AGENTOPS_SCANNER_PLUGINS`: Comma-separated `module:factory` scanner provider plugins.
+- `AGENTOPS_CREDENTIAL_ENCRYPTION_KEY`: Fernet master key for outbound service credentials. Load it from a dedicated secret store only into the API process; never print it or put it in a command argument.
+- `AGENTOPS_CREDENTIAL_STORE`: `fernet` for local development or `openbao` for external secret
+  storage. The Agent-facing API remains `credential_ref` in both modes.
+- `AGENTOPS_OPENBAO_URL`, `AGENTOPS_OPENBAO_TOKEN`, `AGENTOPS_OPENBAO_KV_MOUNT`: OpenBao KV v2
+  connection settings. The token must be injected only into the API process by the deployment secret
+  mechanism; do not place it in a URL.
+- `AGENTOPS_OTEL_ENABLED`, `AGENTOPS_OTEL_EXPORTER_OTLP_ENDPOINT`: Enable OTLP traces to an
+  OpenTelemetry Collector. Traces contain route templates, timings, status, policy action and risk
+  bucket; request/response bodies, headers, tool parameters and credential values are excluded.
+
+## DeepSeek credential boundary
+
+DeepSeek keys use a model-blind path: an administrator submits the key to
+`POST /v1/credentials/deepseek`, receives only an opaque `credential_ref`, and grants that
+reference to explicit authenticated actor IDs. Agents call
+`POST /v1/deepseek/chat/completions` with the reference; they cannot provide a URL, headers, or
+raw key. The trusted API process checks the project, actor, provider, fixed target, status, and
+version under a per-credential database lock, then the trusted transport decrypts and injects the
+key only into the final `Authorization` header for
+`https://api.deepseek.com/chat/completions`. Redirects are not followed.
+
+The built-in Fernet adapter protects against a database-only disclosure. The optional OpenBao
+adapter stores only an opaque KV path and version proof in SQL; the provider secret remains in
+OpenBao. Neither mode is protection
+against compromise of the API process, host, or encryption-key store. Production Helm installs
+must put the key in a separate Kubernetes Secret and set
+`credentialEncryption.existingSecret`; that Secret is mounted only into the API deployment.
 
 ## Docker Compose
+
+The Compose credential-key setting is for local development only. Do not load production
+provider credentials into this stack. Production's concurrent revoke/rotate guarantee requires
+PostgreSQL row locks; SQLite is limited to single-process development and tests.
 
 ```powershell
 docker compose up --build
@@ -111,6 +145,9 @@ uv run python scripts/compose_smoke.py
 
 The compose stack starts API, Gateway, Worker, Redis, Postgres, and Dashboard.
 Production-style deployments should run `uv run alembic upgrade head` before API, Gateway, and Worker startup. The compose stack includes a one-shot migration service for this.
+
+For read-only Windows/WSL proxy and Docker connectivity checks, see
+`docs/wsl-network-diagnostics.md`. The diagnostic scripts never change daemon or proxy state.
 
 ## Helm
 
@@ -148,3 +185,11 @@ docker compose config --quiet
 ```
 
 The repository uses `uv` for Python environment management.
+
+## Public benchmarks
+
+The repository includes reproducible aggregate-only runners for the fixed NVIDIA Nemotron corpus and
+Microsoft LLMail-Inject Phase 2 challenge data. The LLMail runner verifies fixed source-file hashes,
+runs deterministic rules and the pinned local semantic model separately, and never writes raw prompts
+or per-row model scores to its report. See `specs/public-benchmark-v1.md` and
+`specs/llmail-benchmark-v1.md` for commands, results, and evidence boundaries.

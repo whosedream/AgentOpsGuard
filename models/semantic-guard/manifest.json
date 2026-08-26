@@ -1,0 +1,23 @@
+{
+  "source": "https://huggingface.co/patronus-studio/wolf-defender-prompt-injection-small",
+  "revision": "eff31df5c97ca127b7b55da255a160f88a625c97",
+  "licenses": [
+    {
+      "component": "patronus-studio/wolf-defender-prompt-injection-small",
+      "license": "Apache-2.0",
+      "file": "LICENSE"
+    },
+    {
+      "component": "jhu-clsp/mmBERT-base",
+      "license": "MIT",
+      "source": "https://huggingface.co/jhu-clsp/mmBERT-base"
+    }
+  ],
+  "files": {
+    "config.json": "ade54b8d4f35b074c04b9f1f29f30e87f9132de23a8f20e877a24c3bb5aa84f9",
+    "model.safetensors": "0ddb75f2dd31dbb18279a5a7c1ff41948fd147e3f28189ea346e4e2cbe638ad0",
+    "special_tokens_map.json": "97f6f6ef323755568c9dddf57b7b2bac4c2019e8c10c2ef1262001a9f6487124",
+    "tokenizer.json": "6b99d3bf966298a637beb18cdd0ff760c73cc6e77bf5d354fd1ce14dd164f0ff",
+    "tokenizer_config.json": "16faa90d04a708989fa6ee4ca7dde990048734b1d8a48fd892689b9750168df7"
+  }
+}

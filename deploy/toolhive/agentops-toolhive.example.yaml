@@ -1,0 +1,9 @@
+servers:
+  sandboxed_tools:
+    id: sandboxed_tools
+    project_id: default
+    runtime_provider: toolhive
+    transport: streamable_http
+    url: http://127.0.0.1:4484/mcp
+    trust_level: sandboxed
+    allowed_agents: []

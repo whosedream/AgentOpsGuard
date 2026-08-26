@@ -1,14 +1,20 @@
 "use client";
 
 import { useState } from "react";
+
 import { apiGet, ContentObject, TraceEvent } from "../../lib/api";
+import { canReadRawContent } from "../../lib/auth";
 import { eventDisplayName, riskTone } from "../../lib/payloads";
+import { useDashboardAuth } from "../auth/AuthProvider";
 import { EmptyState } from "../ui/States";
 
 function ContentRefButton({ label, contentId }: { label: string; contentId?: string | null }) {
+  const auth = useDashboardAuth();
   const [content, setContent] = useState<ContentObject | null>(null);
   const [error, setError] = useState<string | null>(null);
   if (!contentId) return <div className="text-sm text-slate-500">{label}: -</div>;
+  if (!canReadRawContent(auth)) return <div className="text-sm text-slate-500">{label}: redacted for current role</div>;
+
   async function loadContent() {
     setError(null);
     try {
@@ -17,6 +23,7 @@ function ContentRefButton({ label, contentId }: { label: string; contentId?: str
       setError(exc instanceof Error ? exc.message : "Content load failed");
     }
   }
+
   return (
     <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-3">
       <div className="flex items-center justify-between gap-3">
@@ -26,7 +33,7 @@ function ContentRefButton({ label, contentId }: { label: string; contentId?: str
       {error ? <div className="mt-2 text-sm text-rose-200">{error}</div> : null}
       {content ? (
         <div className="mt-3 space-y-2 text-sm">
-          <div className="text-slate-400">Hash: {content.content_hash.slice(0, 16)}…</div>
+          <div className="text-slate-400">Hash: {content.content_hash.slice(0, 16)}...</div>
           {content.labels.length ? <div className="text-amber-200">Labels: {content.labels.join(", ")}</div> : null}
           <pre className="overflow-auto rounded-xl bg-black/30 p-3 text-slate-300">{content.redacted_text ?? content.summary ?? "No redacted content"}</pre>
         </div>

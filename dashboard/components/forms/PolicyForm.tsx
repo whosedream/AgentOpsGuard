@@ -1,10 +1,13 @@
-﻿"use client";
+"use client";
 
 import { useState } from "react";
+
 import { apiPost, PolicyDecision } from "../../lib/api";
 import { buildPolicyPayload, riskTone } from "../../lib/payloads";
+import { useDashboardAuth } from "../auth/AuthProvider";
 
 export function PolicyForm() {
+  const auth = useDashboardAuth();
   const [agentId, setAgentId] = useState("coding-agent");
   const [toolName, setToolName] = useState("shell.execute");
   const [command, setCommand] = useState("rm -rf /");
@@ -15,7 +18,7 @@ export function PolicyForm() {
   async function submit() {
     setError(null);
     try {
-      setResult(await apiPost<PolicyDecision>("/v1/policies/evaluate", buildPolicyPayload({ agentId, toolName, command, riskLabels })));
+      setResult(await apiPost<PolicyDecision>("/v1/policies/evaluate", buildPolicyPayload({ projectId: auth.project_id ?? "default", agentId, toolName, command, riskLabels })));
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Policy evaluation failed");
     }

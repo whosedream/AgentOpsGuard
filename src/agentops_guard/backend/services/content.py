@@ -16,6 +16,18 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("jwt", re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
     ("ssh_private_key", re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----")),
     ("db_url", re.compile(r"(?:postgres|mysql|mongodb|redis)://[^\s'\"]+", re.IGNORECASE)),
+    (
+        "bearer_token",
+        re.compile(
+            r"\bBearer\s+(?=[A-Za-z0-9._~+/=-]{12,}(?:[\s,;]|$))"
+            r"(?=[^\s,;]*[0-9._~+/-])[A-Za-z0-9._~+/-]+=*",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "url_userinfo",
+        re.compile(r"\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^@\s/]+@", re.IGNORECASE),
+    ),
     ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
     ("phone", re.compile(r"(?<!\d)(?:\+?\d{1,3}[- ]?)?\d{3}[- ]?\d{3,4}[- ]?\d{4}(?!\d)")),
 ]

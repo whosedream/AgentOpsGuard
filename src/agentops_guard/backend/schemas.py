@@ -1,7 +1,16 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+
+
+def _validate_outbound_secret(value: SecretStr) -> SecretStr:
+    raw_value = value.get_secret_value()
+    if not raw_value.isascii() or any(
+        ord(character) < 33 or ord(character) == 127 for character in raw_value
+    ):
+        raise ValueError("value must contain printable ASCII characters only")
+    return value
 
 
 EventType = Literal[
@@ -17,6 +26,8 @@ EventType = Literal[
     "error",
     "run_completed",
 ]
+
+RoleType = Literal["admin", "security_reviewer", "developer", "read_only"]
 
 
 class Actor(BaseModel):
@@ -189,6 +200,14 @@ class EvidenceSpan(BaseModel):
     snippet: str
 
 
+class SemanticAssessment(BaseModel):
+    status: Literal["ok", "error"]
+    mode: Literal["shadow", "enforce"]
+    label: Literal["benign", "prompt_injection"] | None = None
+    score: float | None = None
+    model: str
+
+
 class ScanResponse(BaseModel):
     risk_score: float
     risk_labels: list[str]
@@ -196,10 +215,72 @@ class ScanResponse(BaseModel):
     sanitized_content_ref: str | None = None
     sanitized_text: str
     severity: str
+    semantic_assessment: SemanticAssessment | None = Field(default=None, exclude=True)
+
+
+class OrganizationCreate(BaseModel):
+    name: str
+    slug: str | None = None
+    initial_admin: dict[str, str]
+    initial_project: dict[str, str] | None = None
+
+
+class OrganizationOut(BaseModel):
+    id: str
+    slug: str
+    name: str
+    created_at: datetime
+    initial_project_id: str | None = None
+
+
+class UserOut(BaseModel):
+    id: str
+    email: str
+    display_name: str
+    auth_provider: str
+    status: str
+    created_at: datetime
+
+
+class MembershipCreate(BaseModel):
+    email: str
+    display_name: str
+    role: RoleType
+
+
+class MembershipUpdate(BaseModel):
+    role: RoleType | None = None
+    status: Literal["active", "disabled"] | None = None
+
+
+class MembershipOut(BaseModel):
+    id: str
+    organization_id: str
+    user_id: str
+    role: RoleType
+    status: str
+    created_at: datetime
+    user: UserOut
+
+
+class DevLoginRequest(BaseModel):
+    email: str
+    display_name: str
+    role: RoleType = "admin"
+    organization_id: str | None = None
+    organization_name: str | None = None
+
+
+class DevLoginOut(BaseModel):
+    session_id: str
+    user: UserOut
+    membership: MembershipOut
+    project_id: str | None = None
 
 
 class ProjectCreate(BaseModel):
     id: str
+    organization_id: str | None = None
     name: str | None = None
     store_raw_content: bool = False
     retention_days: int = 30
@@ -219,6 +300,7 @@ class ProjectUpdate(BaseModel):
 
 class ProjectOut(BaseModel):
     id: str
+    organization_id: str
     name: str
     store_raw_content: bool
     retention_days: int
@@ -372,8 +454,8 @@ class ControlPlaneStatusOut(BaseModel):
 class RiskEventOut(BaseModel):
     id: str
     project_id: str
-    run_id: str | None
     event_id: str | None
+    run_id: str | None
     risk_type: str
     severity: str
     score: float
@@ -438,12 +520,25 @@ class McpServerConfig(BaseModel):
     id: str | None = None
     project_id: str = "default"
     name: str
-    transport: Literal["stdio", "streamable_http"]
+    transport: Literal["stdio", "streamable_http", "legacy_http"]
+    runtime_provider: Literal["direct", "toolhive"] = "direct"
     command: str | None = None
     args: list[str] = Field(default_factory=list)
     url: str | None = None
     trust_level: Literal["internal", "external", "sandboxed"] = "external"
     allowed_agents: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_runtime_provider(self) -> "McpServerConfig":
+        if self.runtime_provider == "toolhive" and (
+            self.transport != "streamable_http"
+            or not self.url
+            or self.trust_level != "sandboxed"
+        ):
+            raise ValueError(
+                "ToolHive servers require streamable_http, a URL, and sandboxed trust"
+            )
+        return self
 
 
 class McpServerOut(McpServerConfig):
@@ -468,7 +563,8 @@ class McpToolOut(BaseModel):
 
 class McpServerUpdate(BaseModel):
     name: str | None = None
-    transport: Literal["stdio", "streamable_http"] | None = None
+    transport: Literal["stdio", "streamable_http", "legacy_http"] | None = None
+    runtime_provider: Literal["direct", "toolhive"] | None = None
     command: str | None = None
     args: list[str] | None = None
     url: str | None = None
@@ -509,6 +605,47 @@ class ApiKeyCreateOut(ApiKeyOut):
     token: str
 
 
+class DeepSeekCredentialCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = "default"
+    name: str = Field(min_length=1, max_length=255)
+    secret: SecretStr = Field(min_length=1)
+    allowed_actor_ids: list[str] = Field(default_factory=list)
+
+    _printable_secret = field_validator("secret")(_validate_outbound_secret)
+
+
+class DeepSeekCredentialRotate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = "default"
+    secret: SecretStr = Field(min_length=1)
+
+    _printable_secret = field_validator("secret")(_validate_outbound_secret)
+
+
+class CredentialRefOut(BaseModel):
+    credential_ref: str
+
+
+class DeepSeekMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
+class DeepSeekChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = "default"
+    credential_ref: str
+    model: str = Field(min_length=1, max_length=128)
+    messages: list[DeepSeekMessage] = Field(min_length=1)
+    max_tokens: int | None = Field(default=None, ge=1)
+
+
 class AuditLogOut(BaseModel):
     id: str
     project_id: str
@@ -523,8 +660,26 @@ class AuditLogOut(BaseModel):
     created_at: datetime
 
 
+class MembershipSummaryOut(BaseModel):
+    id: str
+    organization_id: str
+    role: RoleType
+    status: str
+
+
+class AuthContextUserOut(BaseModel):
+    id: str
+    email: str
+    display_name: str
+
+
 class AuthContextOut(BaseModel):
     kind: str
+    user: AuthContextUserOut | None = None
+    organization_id: str | None = None
+    memberships: list[MembershipSummaryOut] = Field(default_factory=list)
+    active_membership_id: str | None = None
+    active_role: str | None = None
     project_id: str | None = None
     scopes: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)

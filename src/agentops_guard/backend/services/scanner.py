@@ -8,8 +8,25 @@ from sqlalchemy.orm import Session
 
 from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.models import RiskEvent, ScanRule
-from agentops_guard.backend.schemas import ContentIn, EvidenceSpan, ScanRequest, ScanResponse
-from agentops_guard.backend.services.content import new_id, persist_content, redact_text
+from agentops_guard.backend.schemas import (
+    ContentIn,
+    EvidenceSpan,
+    ScanRequest,
+    ScanResponse,
+    SemanticAssessment,
+)
+from agentops_guard.backend.services.content import (
+    SECRET_PATTERNS,
+    detect_secret_labels,
+    new_id,
+    persist_content,
+    redact_text,
+)
+from agentops_guard.backend.services.semantic_scanner import (
+    SEMANTIC_MODEL_ID,
+    SemanticScannerUnavailable,
+    get_semantic_scanner,
+)
 
 
 @dataclass(frozen=True)
@@ -18,6 +35,7 @@ class ScannerRule:
     pattern: re.Pattern[str]
     severity: str
     score: float
+    untrusted_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -31,21 +49,47 @@ class ScannerFinding:
 
 
 class ScannerProvider:
-    def scan(self, request: ScanRequest, texts: list[tuple[str, int]], db: Session | None = None) -> list[ScannerFinding]:
+    def scan(
+        self,
+        request: ScanRequest,
+        texts: list[tuple[str, int]],
+        db: Session | None = None,
+    ) -> list[ScannerFinding]:
         raise NotImplementedError
 
 
 class RegexScannerProvider(ScannerProvider):
-    def __init__(self, rules: list[ScannerRule]) -> None:
+    def __init__(
+        self,
+        rules: list[ScannerRule],
+        decoded_spans: list[tuple[int, int]] | None = None,
+    ) -> None:
         self.rules = rules
+        self.decoded_spans = decoded_spans or []
 
-    def scan(self, request: ScanRequest, texts: list[tuple[str, int]], db: Session | None = None) -> list[ScannerFinding]:
+    def scan(
+        self,
+        request: ScanRequest,
+        texts: list[tuple[str, int]],
+        db: Session | None = None,
+    ) -> list[ScannerFinding]:
         findings: list[ScannerFinding] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, int, int]] = set()
+        decoded_index = 0
         for text, offset_base in texts:
+            source_span = None
+            if offset_base < 0:
+                source_span = self.decoded_spans[decoded_index]
+                decoded_index += 1
             for rule in self.rules:
+                if rule.untrusted_only and request.source in TRUSTED_SOURCES:
+                    continue
                 for match in rule.pattern.finditer(text):
-                    identity = (rule.label, match.group(0))
+                    start, end = source_span or (
+                        match.start() + offset_base,
+                        match.end() + offset_base,
+                    )
+                    identity = (rule.label, start, end)
                     if identity in seen:
                         continue
                     seen.add(identity)
@@ -54,23 +98,157 @@ class RegexScannerProvider(ScannerProvider):
                             label=rule.label,
                             severity=rule.severity,
                             score=rule.score,
-                            start=match.start() if offset_base >= 0 else 0,
-                            end=match.end() if offset_base >= 0 else min(len(request.content), 80),
-                            snippet=match.group(0)[:160],
+                            start=start,
+                            end=end,
+                            snippet=(
+                                "[REDACTED:base64_obfuscation]"
+                                if source_span is not None
+                                else match.group(0)[:160]
+                            ),
                         )
                     )
-                    break
         return findings
 
 
+TRUSTED_SOURCES = {"user_input"}
+
+EXTERNAL_CONTENT_QUARANTINE_LABELS = frozenset(
+    {
+        "hidden_html",
+        "instruction_override",
+        "semantic_prompt_injection",
+        "system_prompt_override",
+    }
+)
+
+
+def should_quarantine_external_content(scan: ScanResponse) -> bool:
+    return bool(
+        set(scan.risk_labels) & EXTERNAL_CONTENT_QUARANTINE_LABELS
+        or scan.risk_score >= 0.7
+    )
+
+EXTERNAL_ACTION = (
+    r"(?:update|add|send|adjust|create|submit|set|cancel|increase|reduce|"
+    r"clear|change|flag|process|schedule|move|reschedule|place)"
+)
+EXTERNAL_SEPARATOR = r"[\s,:;.!?-]{0,32}"
+
 RULES = [
-    ScannerRule("instruction_override", re.compile(r"ignore (?:all )?(?:previous|above|prior) instructions", re.I), "high", 0.75),
-    ScannerRule("system_prompt_override", re.compile(r"(?:you are now|act as|this is) (?:the )?(?:system|developer) (?:message|instruction)", re.I), "high", 0.75),
-    ScannerRule("credential_exfiltration", re.compile(r"(?:send|upload|post|exfiltrate|leak).{0,80}(?:secret|token|api key|password|credential|env|environment)", re.I), "critical", 0.95),
-    ScannerRule("tool_hijacking", re.compile(r"(?:call|use|invoke).{0,80}(?:shell|terminal|filesystem|database|slack|http|browser)", re.I), "medium", 0.55),
-    ScannerRule("data_exfiltration", re.compile(r"(?:send|post|upload).{0,120}(?:https?://|attacker|webhook|external)", re.I), "critical", 0.9),
-    ScannerRule("hidden_html", re.compile(r"(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|font-size\s*:\s*0)", re.I), "medium", 0.5),
-    ScannerRule("markdown_link_trap", re.compile(r"\[[^\]]*(?:ignore|secret|token|system)[^\]]*\]\([^)]*\)", re.I), "medium", 0.45),
+    ScannerRule(
+        "instruction_override",
+        re.compile(r"ignore (?:all )?(?:previous|above|prior) instructions", re.I),
+        "high",
+        0.75,
+    ),
+    ScannerRule(
+        "instruction_override",
+        re.compile(
+            r"\b(?:ignore|disregard|forget|override|skip|discard|bypass)\b"
+            r"\s+(?:all\s+)?(?:the\s+)?"
+            r"(?:previous|above|prior|earlier|preceding)\s+"
+            r"(?:instructions|directives|rules|guidelines|constraints|orders)\b",
+            re.I,
+        ),
+        "high",
+        0.8,
+        untrusted_only=True,
+    ),
+    ScannerRule(
+        "instruction_override",
+        re.compile(
+            r"\bpriority\s+message\b.{0,160}"
+            r"\bforgot\s+to\s+mention\s+earlier\b.{0,160}"
+            r"\bbefore\s+finishing\b.{0,160}"
+            r"\bplease\s+first\b"
+            + EXTERNAL_SEPARATOR
+            + EXTERNAL_ACTION
+            + r"\b(?=.{1,512}\bthen\s+continue\s+with\s+the\s+original\s+request\b)",
+            re.I | re.S,
+        ),
+        "high",
+        0.8,
+        untrusted_only=True,
+    ),
+    ScannerRule(
+        "instruction_override",
+        re.compile(
+            r"\burgent\b.{0,100}"
+            r"\bbefore\s+completing\s+any\s+other\s+tasks\b.{0,100}"
+            r"\byou\s+must\b"
+            + EXTERNAL_SEPARATOR
+            + EXTERNAL_ACTION
+            + r"\b(?=.{1,512}\bcritical\s+priority\b)",
+            re.I | re.S,
+        ),
+        "high",
+        0.8,
+        untrusted_only=True,
+    ),
+    ScannerRule(
+        "system_prompt_override",
+        re.compile(
+            r"(?:you are now|act as|this is) (?:the )?(?:system|developer) (?:message|instruction)",
+            re.I,
+        ),
+        "high",
+        0.75,
+    ),
+    ScannerRule(
+        "system_prompt_override",
+        re.compile(
+            r"\b(?:you\s+are\s+now\s+(?:(?:in\s+)?developer\s+mode|"
+            r"(?:the\s+)?system)|act\s+as\s+(?:the\s+)?developer\s+mode)\b"
+            r".{0,96}\b(?:reveal|show|output|display|share|expose)\b"
+            r".{0,64}\b(?:instructions|configuration|system\s+prompt|rules|"
+            r"directives|guidelines)\b",
+            re.I | re.S,
+        ),
+        "high",
+        0.8,
+        untrusted_only=True,
+    ),
+    ScannerRule(
+        "credential_exfiltration",
+        re.compile(
+            r"\b(?:send|upload|post|exfiltrate|leak|transmit|transfer|export)\b"
+            r".{0,80}\b(?:secret|token|(?:api|private|access)\s+key|password|"
+            r"credential|env|environment)\b",
+            re.I | re.S,
+        ),
+        "critical",
+        0.95,
+    ),
+    ScannerRule(
+        "tool_hijacking",
+        re.compile(
+            r"(?:call|use|invoke).{0,80}(?:shell|terminal|filesystem|database|slack|http|browser)",
+            re.I,
+        ),
+        "medium",
+        0.55,
+    ),
+    ScannerRule(
+        "data_exfiltration",
+        re.compile(r"(?:send|post|upload).{0,120}(?:https?://|attacker|webhook|external)", re.I),
+        "critical",
+        0.9,
+    ),
+    ScannerRule(
+        "hidden_html",
+        re.compile(
+            r"(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|font-size\s*:\s*0)",
+            re.I,
+        ),
+        "medium",
+        0.5,
+    ),
+    ScannerRule(
+        "markdown_link_trap",
+        re.compile(r"\[[^\]]*(?:ignore|secret|token|system)[^\]]*\]\([^)]*\)", re.I),
+        "medium",
+        0.45,
+    ),
 ]
 
 SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -82,16 +260,28 @@ def _max_severity(labels: list[str], severities: list[str]) -> str:
     return max(severities, key=lambda item: SEVERITY_ORDER[item])
 
 
-def _decode_base64_candidates(content: str) -> list[str]:
-    candidates = re.findall(r"[A-Za-z0-9+/=]{32,}", content)
-    decoded: list[str] = []
-    for candidate in candidates[:10]:
+def _decode_base64_candidates(
+    content: str,
+    *,
+    untrusted: bool,
+) -> list[tuple[str, int, int]]:
+    decoded: list[tuple[str, int, int]] = []
+    for match in list(re.finditer(r"[A-Za-z0-9+/=]{32,}", content))[:10]:
+        candidate = match.group(0)
         try:
-            value = base64.b64decode(candidate, validate=True).decode("utf-8", errors="ignore")
-        except (binascii.Error, ValueError):
+            value = base64.b64decode(candidate, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError, ValueError):
             continue
-        if any(term in value.lower() for term in ("ignore", "secret", "token", "instruction")):
-            decoded.append(value)
+        secret_labels = set(detect_secret_labels(value)) - {"email", "phone"}
+        readable_text = bool(value.strip()) and sum(
+            character.isprintable() or character.isspace() for character in value
+        ) / len(value) >= 0.9
+        if (
+            any(term in value.lower() for term in ("ignore", "secret", "token", "instruction"))
+            or secret_labels
+            or (untrusted and readable_text)
+        ):
+            decoded.append((value, match.start(), match.end()))
     return decoded
 
 
@@ -100,12 +290,18 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
     evidence: list[EvidenceSpan] = []
     severities: list[str] = []
     score = 0.0
+    semantic_assessment: SemanticAssessment | None = None
 
+    decoded_candidates = _decode_base64_candidates(
+        request.content,
+        untrusted=request.source not in TRUSTED_SOURCES,
+    )
     texts = [(request.content, 0)]
-    for decoded in _decode_base64_candidates(request.content):
+    for decoded, start, end in decoded_candidates:
         texts.append((decoded, -1))
 
-    for provider in _providers(request.project_id, db):
+    decoded_spans = [(start, end) for _, start, end in decoded_candidates]
+    for provider in _providers(request.project_id, db, decoded_spans):
         try:
             findings = provider.scan(request, texts, db)
         except Exception:
@@ -115,14 +311,105 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
                 labels.append(finding.label)
             severities.append(finding.severity)
             score = max(score, finding.score)
-            evidence.append(EvidenceSpan(label=finding.label, start=finding.start, end=finding.end, snippet=finding.snippet))
+            evidence.append(
+                EvidenceSpan(
+                    label=finding.label,
+                    start=finding.start,
+                    end=finding.end,
+                    snippet=redact_text(finding.snippet) or "",
+                )
+            )
 
-    if any(text for text, offset in texts if offset == -1):
+    secret_evidence: set[tuple[str, int, int]] = set()
+    secret_texts = [(request.content, None)] + [
+        (decoded, (start, end)) for decoded, start, end in decoded_candidates
+    ]
+    for text, source_span in secret_texts:
+        for label, pattern in SECRET_PATTERNS:
+            if label in {"email", "phone"}:
+                continue
+            for match in pattern.finditer(text):
+                start, end = source_span or match.span()
+                identity = (label, start, end)
+                if identity in secret_evidence:
+                    continue
+                secret_evidence.add(identity)
+                if label not in labels:
+                    labels.append(label)
+                severities.append("critical")
+                score = max(score, 0.95)
+                evidence.append(
+                    EvidenceSpan(
+                        label=label,
+                        start=start,
+                        end=end,
+                        snippet=f"[REDACTED:{label}]",
+                    )
+                )
+
+    if decoded_candidates:
         labels.append("base64_obfuscation")
         severities.append("medium")
         score = max(score, 0.55)
+        evidence.extend(
+            EvidenceSpan(
+                label="base64_obfuscation",
+                start=start,
+                end=end,
+                snippet="[REDACTED:base64_obfuscation]",
+            )
+            for _, start, end in decoded_candidates
+        )
 
-    sanitized_text = redact_text(request.content) or ""
+    semantic_scanner = get_semantic_scanner()
+    if semantic_scanner is not None:
+        try:
+            semantic_assessment = semantic_scanner.assess(request)
+        except SemanticScannerUnavailable:
+            if semantic_scanner.mode == "enforce":
+                raise
+            semantic_assessment = SemanticAssessment(
+                status="error",
+                mode="shadow",
+                model=SEMANTIC_MODEL_ID,
+            )
+        if (
+            semantic_assessment is not None
+            and semantic_assessment.status == "ok"
+            and semantic_assessment.mode == "enforce"
+            and semantic_assessment.label == "prompt_injection"
+        ):
+            labels.append("semantic_prompt_injection")
+            severities.append("high")
+            score = max(score, 0.8)
+            evidence.append(
+                EvidenceSpan(
+                    label="semantic_prompt_injection",
+                    start=0,
+                    end=len(request.content),
+                    snippet="[REDACTED:semantic_prompt_injection]",
+                )
+            )
+
+    sanitized_text = request.content
+    merged_spans: list[tuple[int, int, set[str]]] = []
+    for finding in sorted(evidence, key=lambda item: item.start):
+        if merged_spans and finding.start <= merged_spans[-1][1]:
+            start, end, span_labels = merged_spans[-1]
+            merged_spans[-1] = (
+                start,
+                max(end, finding.end),
+                span_labels | {finding.label},
+            )
+        else:
+            merged_spans.append((finding.start, finding.end, {finding.label}))
+    for start, end, span_labels in reversed(merged_spans):
+        sanitized_text = (
+            sanitized_text[:start]
+            + f"[REDACTED:{','.join(sorted(span_labels))}]"
+            + sanitized_text[end:]
+        )
+    sanitized_text = redact_text(sanitized_text) or ""
     sanitized_ref = None
     if db is not None:
         sanitized_ref = persist_content(
@@ -130,6 +417,41 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
             request.project_id,
             ContentIn(text=sanitized_text, content_type=request.content_type, labels=labels),
         )
+        if semantic_assessment is not None and semantic_assessment.mode == "shadow":
+            if semantic_assessment.status == "error":
+                db.add(
+                    RiskEvent(
+                        id=new_id("risk"),
+                        project_id=request.project_id,
+                        run_id=request.run_id,
+                        event_id=request.event_id,
+                        risk_type="semantic_scanner_error",
+                        severity="medium",
+                        score=0.0,
+                        labels=["semantic_scanner_error"],
+                        evidence=[],
+                        description=(
+                            f"Semantic scanner was unavailable for {request.source} content."
+                        ),
+                    )
+                )
+            elif semantic_assessment.label == "prompt_injection":
+                db.add(
+                    RiskEvent(
+                        id=new_id("risk"),
+                        project_id=request.project_id,
+                        run_id=request.run_id,
+                        event_id=request.event_id,
+                        risk_type="semantic_prompt_injection_shadow",
+                        severity="high",
+                        score=0.8,
+                        labels=["semantic_prompt_injection_shadow"],
+                        evidence=[],
+                        description=(
+                            f"Semantic shadow scanner flagged {request.source} content."
+                        ),
+                    )
+                )
         if labels:
             db.add(
                 RiskEvent(
@@ -154,6 +476,7 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
         sanitized_content_ref=sanitized_ref,
         sanitized_text=sanitized_text,
         severity=_max_severity(labels, severities),
+        semantic_assessment=semantic_assessment,
     )
 
 
@@ -161,7 +484,11 @@ def _active_rules(project_id: str, db: Session | None) -> list[ScannerRule]:
     rules = list(RULES)
     if db is None:
         return rules
-    rows = db.query(ScanRule).filter(ScanRule.project_id == project_id, ScanRule.status == "enabled").all()
+    rows = (
+        db.query(ScanRule)
+        .filter(ScanRule.project_id == project_id, ScanRule.status == "enabled")
+        .all()
+    )
     for row in rows:
         try:
             pattern = re.compile(row.pattern, re.I)
@@ -171,8 +498,14 @@ def _active_rules(project_id: str, db: Session | None) -> list[ScannerRule]:
     return rules
 
 
-def _providers(project_id: str, db: Session | None) -> list[ScannerProvider]:
-    providers: list[ScannerProvider] = [RegexScannerProvider(_active_rules(project_id, db))]
+def _providers(
+    project_id: str,
+    db: Session | None,
+    decoded_spans: list[tuple[int, int]] | None = None,
+) -> list[ScannerProvider]:
+    providers: list[ScannerProvider] = [
+        RegexScannerProvider(_active_rules(project_id, db), decoded_spans)
+    ]
     for plugin in get_settings().scanner_plugins:
         provider = _load_plugin(plugin)
         if provider is not None:

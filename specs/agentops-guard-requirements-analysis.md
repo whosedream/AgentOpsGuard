@@ -40,7 +40,8 @@ Gateway 位于 `src/agentops_guard/gateway/app.py`：
 - 提供 MCP 风格端点：`/tools/list`, `/tools/call`, `/resources/list`, `/resources/read`, `/prompts/list`, `/prompts/get`。
 - 从数据库读取 MCP server registry。
 - 对工具描述、工具参数、工具输出、resource/prompt 内容执行扫描与策略检查。
-- 支持 `streamable_http` 远端转发；`stdio` 当前主要是 echo/demo 形态。
+- 支持标准 MCP `streamable_http` 初始化、工具、资源和提示能力；旧自定义 HTTP 接口仅以
+  `legacy_http` 兼容模式保留。`stdio` 当前仍使用既有进程管理实现。
 
 ### 2.3 Python SDK 与 CLI
 

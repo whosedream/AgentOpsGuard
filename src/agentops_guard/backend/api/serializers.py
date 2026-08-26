@@ -73,6 +73,7 @@ def mcp_server_out(row: McpServer) -> McpServerOut:
         project_id=row.project_id,
         name=row.name,
         transport=row.transport,
+        runtime_provider=row.runtime_provider,
         command=row.command,
         args=row.args or [],
         url=row.url,

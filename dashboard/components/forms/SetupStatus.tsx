@@ -1,17 +1,21 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
+
 import { apiGet, gatewayGet, SystemStatus } from "../../lib/api";
+import { useDashboardAuth } from "../auth/AuthProvider";
 
 export function SetupStatus() {
+  const auth = useDashboardAuth();
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [gatewayOk, setGatewayOk] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const projectId = auth.project_id ?? "default";
 
   useEffect(() => {
     async function load() {
       try {
-        const system = await apiGet<SystemStatus>("/v1/system/status");
+        const system = await apiGet<SystemStatus>(`/v1/system/status?project_id=${encodeURIComponent(projectId)}`);
         setStatus(system);
         await gatewayGet("/mcp/tools/list");
         setGatewayOk(true);
@@ -20,7 +24,7 @@ export function SetupStatus() {
       }
     }
     load();
-  }, []);
+  }, [projectId]);
 
   return (
     <div className="grid gap-4 md:grid-cols-3">

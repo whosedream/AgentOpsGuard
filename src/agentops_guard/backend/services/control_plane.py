@@ -34,12 +34,14 @@ from agentops_guard.backend.schemas import (
 )
 from agentops_guard.backend.services.audit import record_audit
 from agentops_guard.backend.services.content import new_id
+from agentops_guard.backend.services.identity import ensure_bootstrap_organization
 from agentops_guard.backend.services.projects import ensure_project
 
 
 def project_out(row: Project) -> ProjectOut:
     return ProjectOut(
         id=row.id,
+        organization_id=row.organization_id,
         name=row.name,
         store_raw_content=row.store_raw_content,
         retention_days=row.retention_days,
@@ -117,8 +119,10 @@ def suppression_out(row: RunSuppression) -> RunSuppressionOut:
 def create_project_config(db: Session, payload: ProjectCreate) -> ProjectOut:
     if db.get(Project, payload.id):
         raise ValueError("Project already exists")
+    organization_id = payload.organization_id or ensure_bootstrap_organization(db).id
     row = Project(
         id=payload.id,
+        organization_id=organization_id,
         name=payload.name or payload.id,
         store_raw_content=payload.store_raw_content,
         retention_days=payload.retention_days,

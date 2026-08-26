@@ -2,8 +2,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from agentops_guard.backend.auth import current_auth_context
 from agentops_guard.backend.models import AuditLog
+from agentops_guard.backend.security.context import current_auth_context
 from agentops_guard.backend.services.content import new_id
 
 

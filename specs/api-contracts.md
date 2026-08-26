@@ -92,6 +92,39 @@ Lists API keys without plaintext token values.
 
 Revokes the API key and writes an audit log entry.
 
+## Outbound DeepSeek credentials
+
+### `POST /v1/credentials/deepseek`
+
+An operator or active administrator with `credentials:write` submits a DeepSeek secret over the
+administrative control plane. The response is exactly `{ "credential_ref": "cred_..." }`.
+The reference is not a bearer secret: it is bound to the project, explicit authenticated actor
+IDs, provider, fixed tool, fixed origin, injection field, credential scope, status, version, and
+encrypted-secret digest. Actor identity comes from the authenticated session or project API key;
+the request cannot claim an actor ID.
+
+### `PUT /v1/credentials/{credential_ref}/rotate`
+
+Validates the existing encrypted binding before replacing the secret, increments its version, and
+preserves the reference. Rotation is an administrative operation and records only non-secret
+metadata in the audit log.
+
+### `DELETE /v1/credentials/{credential_ref}?project_id=...`
+
+Revokes the reference before any later decryption or outbound call can occur. Invocation, rotation,
+and revocation serialize on the credential row so a completed administrative change cannot race a
+later use of the old value.
+
+### `POST /v1/deepseek/chat/completions`
+
+Requires `models:invoke`. The request accepts `project_id`, `credential_ref`, `model`, `messages`,
+and optional `max_tokens`; caller-supplied URLs, headers, identities, or raw credentials are
+rejected without echoing their values. The API revalidates every credential binding, and the
+trusted transport decrypts only after authorization and sends exactly one non-redirecting request to
+`https://api.deepseek.com/chat/completions`, with the plaintext present only in the final
+`Authorization` header. The managed secret is rejected if it appears in the model request or
+provider response. Upstream errors and secret-bearing responses become fixed local errors.
+
 ### GET /v1/audit-logs
 
 Lists audit logs. Supports `page_mode=envelope`.
@@ -108,8 +141,10 @@ Returns `McpServerOut[]`, newest first for the requested `project_id`. Each item
 
 ### PATCH /v1/mcp/servers/{id}
 
-Request accepts partial server fields: `name`, `transport`, `command`, `args`, `url`, `trust_level`, `allowed_agents`, `status`.
+Request accepts partial server fields: `name`, `transport`, `runtime_provider`, `command`, `args`, `url`, `trust_level`, `allowed_agents`, `status`.
 `status` accepts only `active`, `quarantined`, `disabled`, and `error`; invalid values return `422`.
+`runtime_provider` accepts `direct` or `toolhive`. A ToolHive-backed server must also use
+`transport=streamable_http`, a URL, and `trust_level=sandboxed`; weaker combinations return `422`.
 Returns `McpServerOut`.
 
 ### DELETE /v1/mcp/servers/{id}
@@ -129,6 +164,13 @@ Returns cached `McpToolOut[]`, newest first for the requested `project_id`. Each
 ## Scanner, Policy, Gateway
 
 Existing scanner and policy request/response contracts are unchanged. Gateway endpoints must allow browser CORS and return JSON for tools list, tool call, resource read, and prompt get.
+
+`POST /mcp/tools/call` accepts optional `runId`. For send, write, delete, payment, and permission
+actions, the Gateway compares the tool action and target fields with the intent manifest derived
+from the server-stored run input. Missing or mismatched authorization returns
+`require_approval` and does not call the upstream tool. Caller-supplied intent text is not an
+authorization source. An external tool whose action cannot be classified also requires approval;
+automatic execution requires an administrator-reviewed internal server.
 
 
 ## Operations Hardening

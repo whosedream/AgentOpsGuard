@@ -10,6 +10,7 @@ from agentops_guard.backend.database import get_db
 from agentops_guard.backend.models import ContentObject, RiskEvent, Run, TraceEvent
 from agentops_guard.backend.schemas import ContentOut, EventsIn, PageOut, RunCreate, RunDag, RunOut, RunUpdate, TraceEventOut
 from agentops_guard.backend.services.content import new_id, persist_content
+from agentops_guard.backend.services.policy import INTENT_MANIFEST_KEY, build_user_intent_manifest
 from agentops_guard.backend.services.projects import ensure_project, project_for_resource
 from agentops_guard.backend.services.trace import build_dag, run_to_schema
 
@@ -19,10 +20,25 @@ v1_router = APIRouter()
 
 @v1_router.post("/runs", response_model=RunOut)
 def create_run(payload: RunCreate, request: Request, db: Session = Depends(get_db)) -> RunOut:
-    authorize_project_access(get_auth_context(request), payload.project_id)
+    authorize_project_access(get_auth_context(request), payload.project_id, db=db)
     ensure_project(db, payload.project_id)
     input_ref = persist_content(db, payload.project_id, payload.input)
-    run = Run(id=new_id("run"), project_id=payload.project_id, agent_id=payload.agent_id, trace_id=new_id("trace"), name=payload.name, user_id=payload.user_id, input_ref=input_ref, metadata_json=payload.metadata)
+    metadata = {
+        **payload.metadata,
+        INTENT_MANIFEST_KEY: build_user_intent_manifest(
+            payload.input.text if payload.input is not None else None
+        ),
+    }
+    run = Run(
+        id=new_id("run"),
+        project_id=payload.project_id,
+        agent_id=payload.agent_id,
+        trace_id=new_id("trace"),
+        name=payload.name,
+        user_id=payload.user_id,
+        input_ref=input_ref,
+        metadata_json=metadata,
+    )
     db.add(run)
     db.commit()
     db.refresh(run)
@@ -34,7 +50,7 @@ def update_run(run_id: str, payload: RunUpdate, request: Request, db: Session = 
     run = db.get(Run, run_id)
     if not run:
         raise HTTPException(404, "Run not found")
-    authorize_project_access(get_auth_context(request), run.project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), run.project_id, conceal=True, db=db)
     if payload.status is not None:
         run.status = payload.status
         if payload.status in {"completed", "failed", "blocked"}:
@@ -49,7 +65,10 @@ def update_run(run_id: str, payload: RunUpdate, request: Request, db: Session = 
     if payload.total_tokens is not None:
         run.total_tokens = payload.total_tokens
     if payload.metadata is not None:
-        run.metadata_json = {**(run.metadata_json or {}), **payload.metadata}
+        public_metadata = {
+            key: value for key, value in payload.metadata.items() if key != INTENT_MANIFEST_KEY
+        }
+        run.metadata_json = {**(run.metadata_json or {}), **public_metadata}
     db.commit()
     db.refresh(run)
     return run_to_schema(run)
@@ -67,7 +86,7 @@ def list_runs(
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> list[RunOut] | PageOut:
-    authorize_project_access(auth, project_id)
+    authorize_project_access(auth, project_id, db=db)
     offset = int(cursor or 0)
     query = db.query(Run).filter(Run.project_id == project_id)
     if status:
@@ -90,7 +109,7 @@ def get_run(run_id: str, request: Request, db: Session = Depends(get_db)) -> Run
     run = db.get(Run, run_id)
     if not run:
         raise HTTPException(404, "Run not found")
-    authorize_project_access(get_auth_context(request), run.project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), run.project_id, conceal=True, db=db)
     return run_to_schema(run)
 
 
@@ -99,7 +118,7 @@ def get_run_events(run_id: str, request: Request, db: Session = Depends(get_db))
     run, project_id = project_for_resource(db, Run, run_id)
     if run is None:
         raise HTTPException(404, "Run not found")
-    authorize_project_access(get_auth_context(request), str(project_id), conceal=True)
+    authorize_project_access(get_auth_context(request), str(project_id), conceal=True, db=db)
     events = db.query(TraceEvent).filter(TraceEvent.run_id == run_id).order_by(TraceEvent.created_at.asc()).all()
     return [event_out(event) for event in events]
 
@@ -109,7 +128,7 @@ def get_run_dag(run_id: str, request: Request, db: Session = Depends(get_db)) ->
     run = db.get(Run, run_id)
     if not run:
         raise HTTPException(404, "Run not found")
-    authorize_project_access(get_auth_context(request), run.project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), run.project_id, conceal=True, db=db)
     events = db.query(TraceEvent).filter(TraceEvent.run_id == run_id).order_by(TraceEvent.created_at.asc()).all()
     return build_dag(run, events)
 
@@ -119,11 +138,11 @@ def create_events(payload: EventsIn, request: Request, db: Session = Depends(get
     records: list[TraceEvent] = []
     auth = get_auth_context(request)
     for event in payload.events:
-        authorize_project_access(auth, event.project_id)
+        authorize_project_access(auth, event.project_id, db=db)
         run = db.get(Run, event.run_id)
         if not run:
             raise HTTPException(404, f"Run not found: {event.run_id}")
-        authorize_project_access(auth, run.project_id, conceal=True)
+        authorize_project_access(auth, run.project_id, conceal=True, db=db)
         input_ref = event.input_ref or persist_content(db, event.project_id, event.input)
         output_ref = event.output_ref or persist_content(db, event.project_id, event.output)
         record = TraceEvent(
@@ -157,5 +176,8 @@ def get_content(content_id: str, request: Request, db: Session = Depends(get_db)
     content = db.get(ContentObject, content_id)
     if not content:
         raise HTTPException(404, "Content not found")
-    authorize_project_access(get_auth_context(request), content.project_id, conceal=True)
+    auth = get_auth_context(request)
+    authorize_project_access(auth, content.project_id, conceal=True, db=db)
+    if auth.is_session_user and auth.active_role not in {"admin", "security_reviewer"}:
+        raise HTTPException(403, "Raw content access denied")
     return ContentOut(id=content.id, content_hash=content.content_hash, summary=content.summary, redacted_text=content.redacted_text, labels=content.labels or [])

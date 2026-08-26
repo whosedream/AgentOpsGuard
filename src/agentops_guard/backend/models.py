@@ -1,13 +1,61 @@
-﻿from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from agentops_guard.backend.database import Base, utcnow
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    slug: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    auth_provider: Mapped[str] = mapped_column(String(64), default="dev_stub")
+    external_subject: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Membership(Base):
+    __tablename__ = "memberships"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(String(64), ForeignKey("organizations.id"), index=True)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), index=True)
+    role: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Session(Base):
+    __tablename__ = "sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True, default="")
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), index=True)
+    organization_id: Mapped[str] = mapped_column(String(64), ForeignKey("organizations.id"), index=True)
+    membership_id: Mapped[str] = mapped_column(String(64), ForeignKey("memberships.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(64), default="dev_stub")
+    expires_at: Mapped[object] = mapped_column(DateTime(timezone=True), index=True)
+    last_used_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Project(Base):
     __tablename__ = "projects"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(String(64), ForeignKey("organizations.id"), index=True, default="")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     store_raw_content: Mapped[bool] = mapped_column(Boolean, default=False)
     retention_days: Mapped[int] = mapped_column(Integer, default=30)
@@ -203,6 +251,30 @@ class ApiKey(Base):
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ServiceCredential(Base):
+    __tablename__ = "service_credentials"
+
+    credential_ref: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
+    binding_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    tool: Mapped[str] = mapped_column(String(128), nullable=False)
+    origin: Mapped[str] = mapped_column(String(255), nullable=False)
+    injection_field: Mapped[str] = mapped_column(String(64), nullable=False)
+    credential_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    allowed_actor_ids: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    last_used_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
@@ -226,6 +298,7 @@ class McpServer(Base):
     project_id: Mapped[str] = mapped_column(String(64), index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     transport: Mapped[str] = mapped_column(String(64), nullable=False)
+    runtime_provider: Mapped[str] = mapped_column(String(32), default="direct")
     command: Mapped[str | None] = mapped_column(String(512))
     args: Mapped[list] = mapped_column(JSON, default=list)
     url: Mapped[str | None] = mapped_column(String(512))
@@ -309,3 +382,5 @@ class BackgroundJob(Base):
 
 Index("ix_trace_events_run_parent", TraceEvent.run_id, TraceEvent.parent_span_id)
 Index("ix_trace_events_run_type", TraceEvent.run_id, TraceEvent.event_type)
+Index("ix_memberships_org_user", Membership.organization_id, Membership.user_id)
+Index("ix_sessions_user_org", Session.user_id, Session.organization_id)

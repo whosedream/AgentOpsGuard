@@ -3,7 +3,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from agentops_guard.backend.auth import AuthContext, authorize_project_access, get_auth_context, require_operator, require_scope
+from agentops_guard.backend.auth import AuthContext, authorize_organization_access, authorize_project_access, get_auth_context, require_scope
 from agentops_guard.backend.database import get_db
 from agentops_guard.backend.models import ApprovalRequest, PolicyPack, Project, RunSuppression, ScanRule
 from agentops_guard.backend.schemas import (
@@ -64,16 +64,20 @@ def _page(items: list[object], limit: int, offset: int) -> PageOut:
     dependencies=[Depends(require_scope("control:read"))],
 )
 def get_control_plane_status(project_id: str = "default", auth: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)) -> ControlPlaneStatusOut:
-    authorize_project_access(auth, project_id)
+    authorize_project_access(auth, project_id, db=db)
     return control_plane_status(db, project_id)
 
 
 @v1_router.post(
     "/projects",
     response_model=ProjectOut,
-    dependencies=[Depends(require_scope("control:admin")), Depends(require_operator)],
+    dependencies=[Depends(require_scope("control:admin"))],
 )
-def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> ProjectOut:
+def create_project(payload: ProjectCreate, auth: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)) -> ProjectOut:
+    if auth.is_session_user and not payload.organization_id:
+        payload = payload.model_copy(update={"organization_id": auth.organization_id})
+    if auth.is_session_user and payload.organization_id:
+        authorize_organization_access(auth, payload.organization_id)
     try:
         result = create_project_config(db, payload)
     except ValueError as exc:
@@ -85,16 +89,22 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
 @v1_router.get(
     "/projects",
     response_model=list[ProjectOut] | PageOut,
-    dependencies=[Depends(require_scope("control:read")), Depends(require_operator)],
+    dependencies=[Depends(require_scope("control:read"))],
 )
 def list_projects(
     limit: int = Query(default=50, le=200),
     cursor: str | None = None,
     page_mode: str | None = None,
+    auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> list[ProjectOut] | PageOut:
+    if auth.is_project_key:
+        raise HTTPException(403, "Project listing is not available for project API keys")
     offset = int(cursor or 0)
-    rows = db.query(Project).order_by(Project.created_at.desc()).offset(offset).limit(limit).all()
+    query = db.query(Project)
+    if not auth.is_operator and auth.organization_id:
+        query = query.filter(Project.organization_id == auth.organization_id)
+    rows = query.order_by(Project.created_at.desc()).offset(offset).limit(limit).all()
     items = [project_out(row) for row in rows]
     return _page(items, limit, offset) if page_mode == "envelope" else items
 
@@ -105,7 +115,7 @@ def list_projects(
     dependencies=[Depends(require_scope("control:read"))],
 )
 def get_project(project_id: str, request: Request, db: Session = Depends(get_db)) -> ProjectOut:
-    authorize_project_access(get_auth_context(request), project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), project_id, conceal=True, db=db)
     ensure_project(db, project_id)
     row = db.get(Project, project_id)
     if row is None:
@@ -120,7 +130,7 @@ def get_project(project_id: str, request: Request, db: Session = Depends(get_db)
     dependencies=[Depends(require_scope("control:admin"))],
 )
 def update_project(project_id: str, payload: ProjectUpdate, request: Request, db: Session = Depends(get_db)) -> ProjectOut:
-    authorize_project_access(get_auth_context(request), project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), project_id, conceal=True, db=db)
     try:
         result = update_project_config(db, project_id, payload)
     except ValueError as exc:
@@ -135,7 +145,7 @@ def update_project(project_id: str, payload: ProjectUpdate, request: Request, db
     dependencies=[Depends(require_scope("approvals:write"))],
 )
 def create_approval(payload: ApprovalRequestCreate, request: Request, db: Session = Depends(get_db)) -> ApprovalRequestOut:
-    authorize_project_access(get_auth_context(request), payload.project_id)
+    authorize_project_access(get_auth_context(request), payload.project_id, db=db)
     result = create_approval_request(db, payload)
     db.commit()
     return result
@@ -155,7 +165,7 @@ def list_approvals(
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> list[ApprovalRequestOut] | PageOut:
-    authorize_project_access(auth, project_id)
+    authorize_project_access(auth, project_id, db=db)
     offset = int(cursor or 0)
     query = db.query(ApprovalRequest).filter(ApprovalRequest.project_id == project_id)
     if status:
@@ -174,7 +184,7 @@ def get_approval(approval_id: str, request: Request, db: Session = Depends(get_d
     row = db.get(ApprovalRequest, approval_id)
     if row is None:
         raise HTTPException(404, "Approval request not found")
-    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True, db=db)
     return approval_out(row)
 
 
@@ -188,7 +198,7 @@ def review_approval(approval_id: str, payload: ApprovalReview, request: Request,
     if row is None:
         raise HTTPException(404, "Approval request not found")
     try:
-        authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
+        authorize_project_access(get_auth_context(request), row.project_id, conceal=True, db=db)
         result = review_approval_request(db, approval_id, payload)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -202,7 +212,7 @@ def review_approval(approval_id: str, payload: ApprovalReview, request: Request,
     dependencies=[Depends(require_scope("policies:admin"))],
 )
 def create_pack(payload: PolicyPackCreate, request: Request, db: Session = Depends(get_db)) -> PolicyPackOut:
-    authorize_project_access(get_auth_context(request), payload.project_id)
+    authorize_project_access(get_auth_context(request), payload.project_id, db=db)
     result = create_policy_pack(db, payload)
     db.commit()
     return result
@@ -222,7 +232,7 @@ def list_policy_packs(
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> list[PolicyPackOut] | PageOut:
-    authorize_project_access(auth, project_id)
+    authorize_project_access(auth, project_id, db=db)
     offset = int(cursor or 0)
     query = db.query(PolicyPack).filter(PolicyPack.project_id == project_id)
     if status:
@@ -241,7 +251,7 @@ def update_pack(pack_id: str, payload: PolicyPackUpdate, request: Request, db: S
     row = db.get(PolicyPack, pack_id)
     if row is None:
         raise HTTPException(404, "Policy pack not found")
-    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True, db=db)
     try:
         result = update_policy_pack(db, pack_id, payload)
     except ValueError as exc:
@@ -259,7 +269,7 @@ def create_pack_version(pack_id: str, payload: PolicyPackVersionCreate, request:
     row = db.get(PolicyPack, pack_id)
     if row is None:
         raise HTTPException(404, "Policy pack not found")
-    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True, db=db)
     try:
         result = create_policy_pack_version(db, pack_id, payload)
     except ValueError as exc:
@@ -277,7 +287,7 @@ def delete_pack(pack_id: str, request: Request, db: Session = Depends(get_db)) -
     row = db.get(PolicyPack, pack_id)
     if row is None:
         raise HTTPException(404, "Policy pack not found")
-    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True, db=db)
     record_audit(db, project_id=row.project_id, action="policy_pack.delete", resource_type="policy_pack", resource_id=pack_id)
     db.delete(row)
     db.commit()
@@ -290,7 +300,7 @@ def delete_pack(pack_id: str, request: Request, db: Session = Depends(get_db)) -
     dependencies=[Depends(require_scope("scanner:admin"))],
 )
 def create_rule(payload: ScanRuleCreate, request: Request, db: Session = Depends(get_db)) -> ScanRuleOut:
-    authorize_project_access(get_auth_context(request), payload.project_id)
+    authorize_project_access(get_auth_context(request), payload.project_id, db=db)
     try:
         result = create_scan_rule(db, payload)
     except re.error as exc:
@@ -313,7 +323,7 @@ def list_scan_rules(
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> list[ScanRuleOut] | PageOut:
-    authorize_project_access(auth, project_id)
+    authorize_project_access(auth, project_id, db=db)
     offset = int(cursor or 0)
     query = db.query(ScanRule).filter(ScanRule.project_id == project_id)
     if status:
@@ -332,7 +342,7 @@ def update_rule(rule_id: str, payload: ScanRuleUpdate, request: Request, db: Ses
     row = db.get(ScanRule, rule_id)
     if row is None:
         raise HTTPException(404, "Scan rule not found")
-    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True, db=db)
     try:
         result = update_scan_rule(db, rule_id, payload)
     except ValueError as exc:
@@ -352,7 +362,7 @@ def delete_rule(rule_id: str, request: Request, db: Session = Depends(get_db)) -
     row = db.get(ScanRule, rule_id)
     if row is None:
         raise HTTPException(404, "Scan rule not found")
-    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True, db=db)
     record_audit(db, project_id=row.project_id, action="scan_rule.delete", resource_type="scan_rule", resource_id=rule_id)
     db.delete(row)
     db.commit()
@@ -365,7 +375,7 @@ def delete_rule(rule_id: str, request: Request, db: Session = Depends(get_db)) -
     dependencies=[Depends(require_scope("runs:admin"))],
 )
 def suppress_run(run_id: str, payload: RunSuppressionCreate, request: Request, db: Session = Depends(get_db)) -> RunSuppressionOut:
-    authorize_project_access(get_auth_context(request), payload.project_id)
+    authorize_project_access(get_auth_context(request), payload.project_id, db=db)
     try:
         result = create_run_suppression(db, run_id, payload)
     except ValueError as exc:
@@ -382,7 +392,7 @@ def suppress_run(run_id: str, payload: RunSuppressionCreate, request: Request, d
 def list_run_suppressions(run_id: str, request: Request, db: Session = Depends(get_db)) -> list[RunSuppressionOut]:
     rows = db.query(RunSuppression).filter(RunSuppression.run_id == run_id).order_by(RunSuppression.created_at.desc()).all()
     if rows:
-        authorize_project_access(get_auth_context(request), rows[0].project_id, conceal=True)
+        authorize_project_access(get_auth_context(request), rows[0].project_id, conceal=True, db=db)
     return [suppression_out(row) for row in rows]
 
 
@@ -400,7 +410,7 @@ def update_suppression(
     row = db.get(RunSuppression, suppression_id)
     if row is None:
         raise HTTPException(404, "Run suppression not found")
-    authorize_project_access(get_auth_context(request), row.project_id, conceal=True)
+    authorize_project_access(get_auth_context(request), row.project_id, conceal=True, db=db)
     try:
         result = update_run_suppression(db, suppression_id, payload)
     except ValueError as exc:
