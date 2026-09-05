@@ -1,0 +1,81 @@
+{{- if and (eq .Values.credentialStore.openbaoAuthMethod "proxy") (or (eq .Values.credentialStore.backend "openbao") (eq .Values.auditCheckpoints.backend "openbao")) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentops-guard.name" . }}-openbao-proxy-api
+  labels:
+    {{- include "agentops-guard.labels" . | nindent 4 }}
+data:
+  proxy.hcl: |
+    pid_file = "/tmp/openbao-proxy.pid"
+
+    vault {
+      address = {{ include "agentops-guard.openbaoRemoteUrl" . | quote }}
+      {{- if .Values.credentialStore.openbaoCaExistingSecret }}
+      ca_cert = "/var/run/secrets/agentops/openbao-ca/ca.crt"
+      {{- end }}
+    }
+
+    auto_auth {
+      method {
+        type = "approle"
+        mount_path = {{ printf "auth/%s" .Values.credentialStore.openbaoAppRoleMount | quote }}
+        config = {
+          role_id_file_path = "/var/run/secrets/agentops/openbao/role-id"
+          secret_id_file_path = "/var/run/secrets/agentops/openbao/wrapped-secret-id"
+          remove_secret_id_file_after_reading = false
+          secret_id_response_wrapping_path = {{ required "credentialStore.openbaoAppRoleSecretIdResponseWrappingPath is required for OpenBao Proxy" .Values.credentialStore.openbaoAppRoleSecretIdResponseWrappingPath | quote }}
+        }
+      }
+    }
+
+    listener "tcp" {
+      address = {{ printf "127.0.0.1:%v" .Values.openbaoProxy.port | quote }}
+      tls_disable = true
+    }
+
+    api_proxy {
+      use_auto_auth_token = "force"
+    }
+{{- end }}
+{{- if .Values.auditAnchorExporter.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentops-guard.name" . }}-openbao-proxy-audit-exporter
+  labels:
+    {{- include "agentops-guard.labels" . | nindent 4 }}
+data:
+  proxy.hcl: |
+    pid_file = "/tmp/openbao-proxy.pid"
+
+    vault {
+      address = {{ include "agentops-guard.openbaoRemoteUrl" . | quote }}
+      {{- if .Values.credentialStore.openbaoCaExistingSecret }}
+      ca_cert = "/var/run/secrets/agentops/openbao-ca/ca.crt"
+      {{- end }}
+    }
+
+    auto_auth {
+      method {
+        type = "approle"
+        mount_path = {{ printf "auth/%s" .Values.credentialStore.openbaoAppRoleMount | quote }}
+        config = {
+          role_id_file_path = "/var/run/secrets/agentops/openbao/role-id"
+          secret_id_file_path = "/var/run/secrets/agentops/openbao/wrapped-secret-id"
+          remove_secret_id_file_after_reading = false
+          secret_id_response_wrapping_path = {{ required "auditAnchorExporter.openbaoAppRoleSecretIdResponseWrappingPath is required" .Values.auditAnchorExporter.openbaoAppRoleSecretIdResponseWrappingPath | quote }}
+        }
+      }
+    }
+
+    listener "tcp" {
+      address = {{ printf "127.0.0.1:%v" .Values.openbaoProxy.port | quote }}
+      tls_disable = true
+    }
+
+    api_proxy {
+      use_auto_auth_token = "force"
+    }
+{{- end }}

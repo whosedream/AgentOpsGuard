@@ -35,6 +35,9 @@ def evaluate_opa(input_document: dict[str, Any]) -> dict[str, Any]:
         raise OpaUnavailable("OPA policy evaluation failed") from exc
     if not isinstance(result, dict):
         raise OpaUnavailable("OPA returned no decision")
+    expected_revision = settings.opa_expected_policy_revision
+    if expected_revision is not None and result.get("policy_revision") != expected_revision:
+        raise OpaUnavailable("OPA policy revision does not match the approved revision")
     return result
 
 
@@ -58,3 +61,5 @@ def check_opa_health() -> None:
             response.raise_for_status()
     except httpx.HTTPError as exc:
         raise OpaUnavailable("OPA health check failed") from exc
+    if settings.opa_expected_policy_revision is not None:
+        evaluate_opa({"tool": {"name": "records.read"}, "risk_score": 0})

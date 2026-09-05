@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime
 import json
+import os
 from pathlib import Path
 import sqlite3
 import statistics
@@ -118,21 +119,33 @@ def main() -> None:
     parser.add_argument("--contextforge-environment-packages", type=int)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    agentops_api_key = os.environ.get("AGENTOPS_BENCHMARK_API_KEY")
+    if not agentops_api_key:
+        raise SystemExit("AGENTOPS_BENCHMARK_API_KEY must be supplied by the trusted runner")
 
     project_query = {"project_id": args.project_id}
+    agentops_headers = {"X-AgentOps-Api-Key": agentops_api_key}
     with httpx.Client(timeout=30.0) as client:
         agentops_tools_response = client.get(
-            f"{args.agentops_url}/mcp/tools/list", params=project_query
+            f"{args.agentops_url}/mcp/tools/list",
+            params=project_query,
+            headers=agentops_headers,
         )
         agentops_tools_response.raise_for_status()
         agentops_tools = agentops_tools_response.json()["tools"]
-        agentops_resources = client.get(f"{args.agentops_url}/mcp/resources/list").json()[
-            "resources"
-        ]
-        agentops_prompts = client.get(f"{args.agentops_url}/mcp/prompts/list").json()["prompts"]
+        agentops_resources = client.get(
+            f"{args.agentops_url}/mcp/resources/list",
+            params=project_query,
+            headers=agentops_headers,
+        ).json()["resources"]
+        agentops_prompts = client.get(
+            f"{args.agentops_url}/mcp/prompts/list",
+            params=project_query,
+            headers=agentops_headers,
+        ).json()["prompts"]
         standard_probe = client.post(
             f"{args.agentops_url}/mcp",
-            headers=MCP_HEADERS,
+            headers={**MCP_HEADERS, **agentops_headers},
             json={
                 "jsonrpc": "2.0",
                 "id": "initialize",
@@ -157,15 +170,14 @@ def main() -> None:
             },
         )
         contextforge_tools = rpc(client, contextforge_mcp, "tools/list", {})["tools"]
-        contextforge_resources = rpc(client, contextforge_mcp, "resources/list", {})[
-            "resources"
-        ]
+        contextforge_resources = rpc(client, contextforge_mcp, "resources/list", {})["resources"]
         contextforge_prompts = rpc(client, contextforge_mcp, "prompts/list", {})["prompts"]
 
         def agentops_call(server_id: str, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             response = client.post(
                 f"{args.agentops_url}/mcp/tools/call",
                 params=project_query,
+                headers=agentops_headers,
                 json={"serverId": server_id, "name": name, "arguments": arguments},
             )
             response.raise_for_status()
@@ -176,13 +188,14 @@ def main() -> None:
                 client,
                 contextforge_mcp,
                 "tools/call",
-                {"name": f"{args.contextforge_prefix}-{name.replace('_', '-')}", "arguments": arguments},
+                {
+                    "name": f"{args.contextforge_prefix}-{name.replace('_', '-')}",
+                    "arguments": arguments,
+                },
             )
 
         agentops_external = agentops_call(args.agentops_external_server, "echo", {"text": "probe"})
-        agentops_injection = agentops_call(
-            args.agentops_internal_server, "wrapped_instruction", {}
-        )
+        agentops_injection = agentops_call(args.agentops_internal_server, "wrapped_instruction", {})
         agentops_write = agentops_call(
             args.agentops_internal_server,
             "mutate_record",
@@ -233,8 +246,7 @@ def main() -> None:
                 "agentops_structured_content_preserved": "structuredContent" in agentops_structured,
                 "contextforge_indirect_injection": {
                     "is_error": bool(contextforge_injection.get("isError")),
-                    "attack_text_returned": injection_marker
-                    in json.dumps(contextforge_injection),
+                    "attack_text_returned": injection_marker in json.dumps(contextforge_injection),
                 },
                 "contextforge_destructive_write": {
                     "is_error": bool(contextforge_write.get("isError")),
@@ -292,7 +304,9 @@ def main() -> None:
         }
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    args.output.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
     print(args.output)
 
 

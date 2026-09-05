@@ -6,7 +6,11 @@ import httpx
 import pytest
 
 from agentops_guard.backend.config import Settings
-from agentops_guard.backend.services.credentials import OpenBaoCredentialStore
+from agentops_guard.backend.services.credentials import (
+    CredentialStoreUnavailable,
+    OpenBaoCredentialStore,
+)
+from agentops_guard.backend.services.openbao_auth import ProxyOpenBaoTokenProvider
 
 
 def test_openbao_store_keeps_secret_out_of_sql_markers_and_binds_metadata():
@@ -115,9 +119,7 @@ def test_openbao_rebinds_revocation_without_returning_secret():
     }
     revoked = {**active, "status": "revoked", "revoked_at": "2026-08-24T00:00:00+00:00"}
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        store = OpenBaoCredentialStore(
-            url="http://openbao.test", token="test-token", client=client
-        )
+        store = OpenBaoCredentialStore(url="http://openbao.test", token="test-token", client=client)
         stored = store.store_credential("cred_revoke", secret, active)
         proof = store.rebind_credential(
             "cred_revoke",
@@ -137,6 +139,50 @@ def test_openbao_rebinds_revocation_without_returning_secret():
             )
             == secret
         )
+
+
+def test_openbao_request_failure_does_not_chain_token_bearing_request():
+    token_marker = "short-lived-token-canary-never-echo"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        store = OpenBaoCredentialStore(
+            url="http://openbao.test",
+            token=token_marker,
+            client=client,
+        )
+        with pytest.raises(CredentialStoreUnavailable) as captured:
+            store.store_credential(
+                "cred_failure",
+                "provider-secret",
+                {"credential_ref": "cred_failure", "status": "active"},
+            )
+
+    assert captured.value.__cause__ is None
+    assert token_marker not in str(captured.value)
+    assert token_marker not in repr(captured.value)
+
+
+def test_openbao_proxy_mode_sends_no_token_header_from_application():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "X-Vault-Token" not in request.headers
+        return httpx.Response(200, json={"data": {"version": 1}})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        store = OpenBaoCredentialStore(
+            url="http://127.0.0.1:8100",
+            token_provider=ProxyOpenBaoTokenProvider(),
+            client=client,
+        )
+        stored = store.store_credential(
+            "cred_proxy",
+            "provider-secret",
+            {"credential_ref": "cred_proxy", "status": "active"},
+        )
+
+    assert stored.binding_proof == "openbao-version:1"
 
 
 def test_openbao_settings_require_credential_free_url_and_secret_token():

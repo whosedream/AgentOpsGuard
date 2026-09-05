@@ -9,6 +9,8 @@ import sys
 from threading import Lock
 from types import SimpleNamespace
 
+from fastapi.testclient import TestClient
+import httpx
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -22,6 +24,7 @@ from agentops_guard.backend.services.semantic_scanner import (
     MAX_MODEL_CHARACTERS,
     MODEL_BATCH_SIZE,
     SEMANTIC_MODEL_ID,
+    RemoteSemanticScanner,
     SemanticScanner,
     SemanticScannerUnavailable,
     TransformersSemanticBackend,
@@ -96,6 +99,67 @@ def _semantic_scanner(
         backend_factory=backend_factory,
         manifest_sha256=manifest_sha256,
     )
+
+
+def test_remote_semantic_scanner_sends_only_bounded_redacted_text(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        captured["text"] = payload["text"]
+        return httpx.Response(200, json={"score": 0.97, "model": SEMANTIC_MODEL_ID})
+
+    original_client = httpx.Client
+    monkeypatch.setattr(
+        semantic_service.httpx,
+        "Client",
+        lambda **_kwargs: original_client(transport=httpx.MockTransport(handler)),
+    )
+    semantic = RemoteSemanticScanner("http://semantic.test", "shadow", 0.9, 1.0)
+
+    assessment = semantic.assess(
+        ScanRequest(content=f"{SECRET} " + "外部内容" * 500, source="mcp_tool_result")
+    )
+
+    assert assessment is not None
+    assert assessment.label == "prompt_injection"
+    assert SECRET not in captured["text"]
+    assert len(captured["text"]) <= MAX_MODEL_CHARACTERS
+
+
+def test_semantic_scanner_keeps_medium_tool_results_contiguous(tmp_path: Path):
+    backend = FakeBackend(score=0.97)
+    semantic = _semantic_scanner(tmp_path, backend)
+    content = "开头" * 150 + "中间攻击指令" + "结尾" * 150
+
+    assessment = semantic.assess(
+        ScanRequest(content=content, source="mcp_tool_result")
+    )
+
+    assert assessment is not None
+    assert backend.inputs == [content]
+
+
+def test_isolated_semantic_service_redacts_again_before_model(monkeypatch, tmp_path: Path):
+    from agentops_guard.semantic_service import app as semantic_app
+
+    backend = FakeBackend(score=0.42)
+    semantic = _semantic_scanner(tmp_path, backend)
+    monkeypatch.setattr(semantic_app, "get_semantic_scanner", lambda: semantic)
+
+    response = TestClient(semantic_app.app).post("/v1/score", json={"text": SECRET})
+
+    assert response.status_code == 200
+    assert response.json() == {"score": 0.42, "model": SEMANTIC_MODEL_ID}
+    assert SECRET not in backend.inputs[0]
+
+    invalid = TestClient(semantic_app.app).post(
+        "/v1/score",
+        json={"text": SECRET * MAX_MODEL_CHARACTERS},
+    )
+    assert invalid.status_code == 422
+    assert invalid.json() == {"detail": "Invalid request"}
+    assert SECRET not in invalid.text
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,27 @@
+webhook:
+  replicaCount: 2
+  failurePolicy: Fail
+  image:
+    repository: ghcr.io/sigstore/policy-controller/policy-controller
+    version: sha256:0492bb264fb1d9bdc8e3f343ef542cc85b7dd7c7fd8d9524b453c2bd31a1d128
+    pullPolicy: IfNotPresent
+  extraArgs:
+    disable-tuf: true
+  configData:
+    no-match-policy: deny
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+
+leasescleanup:
+  image:
+    repository: cgr.dev/chainguard/kubectl
+    version: sha256:7200e12e0a13c12291314c31bbd0843baf07947e91091bce8755ee3f8374bea0
+    pullPolicy: IfNotPresent

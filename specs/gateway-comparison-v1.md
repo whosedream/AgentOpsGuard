@@ -38,6 +38,9 @@ AgentOps Guard 使用全新开发数据库，注册两个指向 `http://127.0.0.
 
 最后运行：
 
+由受信测试运行器在进程环境中注入 `AGENTOPS_BENCHMARK_API_KEY`。脚本不接受命令行密钥，
+也不把该值写入报告。
+
 ```bash
 uv run python scripts/benchmark_gateway_comparison.py \
   --agentops-db /tmp/agentops-comparison.db \

@@ -1,5 +1,25 @@
-from agentops_guard.backend.models import ApiKey, AuditLog, BackgroundJob, EvalRun, McpServer, McpTool, ReplayRun, RiskEvent, TraceEvent
-from agentops_guard.backend.schemas import ApiKeyOut, AuditLogOut, EvalRunOut, JobOut, McpServerOut, McpToolOut, ReplayOut, RiskEventOut, TraceEventOut
+from agentops_guard.backend.models import (
+    ApiKey,
+    AuditLog,
+    BackgroundJob,
+    EvalRun,
+    McpServer,
+    McpTool,
+    ReplayRun,
+    RiskEvent,
+    TraceEvent,
+)
+from agentops_guard.backend.schemas import (
+    ApiKeyOut,
+    AuditLogOut,
+    EvalRunOut,
+    JobOut,
+    McpServerOut,
+    McpToolOut,
+    ReplayOut,
+    RiskEventOut,
+    TraceEventOut,
+)
 
 
 def replay_out(row: ReplayRun) -> ReplayOut:
@@ -96,6 +116,7 @@ def mcp_tool_out(row: McpTool) -> McpToolOut:
         risk_score=row.risk_score,
         risk_labels=row.risk_labels or [],
         status=row.status,
+        current_revision_id=row.current_revision_id,
         created_at=row.created_at,
     )
 
@@ -105,6 +126,7 @@ def api_key_out(row: ApiKey) -> ApiKeyOut:
         id=row.id,
         project_id=row.project_id,
         name=row.name,
+        agent_id=row.agent_id,
         scopes=row.scopes or [],
         expires_at=row.expires_at,
         last_used_at=row.last_used_at,
@@ -125,6 +147,8 @@ def audit_out(row: AuditLog) -> AuditLogOut:
         before=row.before,
         after=row.after,
         metadata=row.metadata_json or {},
+        previous_hash=row.previous_hash,
+        entry_hash=row.entry_hash,
         created_at=row.created_at,
     )
 

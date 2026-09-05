@@ -2,20 +2,13 @@ from __future__ import annotations
 
 import json
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 
-server = FastMCP(
-    "agentops-reference",
-    host="127.0.0.1",
-    port=19090,
-    streamable_http_path="/mcp",
-    stateless_http=True,
-    json_response=True,
-)
+server = MCPServer("agentops-reference")
 
 
 @server.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
@@ -150,4 +143,11 @@ async def compatibility_call(request: Request) -> JSONResponse:
 
 
 if __name__ == "__main__":
-    server.run("streamable-http")
+    server.run(
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=19090,
+        streamable_http_path="/mcp",
+        stateless_http=True,
+        json_response=True,
+    )

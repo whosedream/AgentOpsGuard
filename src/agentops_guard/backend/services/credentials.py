@@ -10,6 +10,12 @@ import httpx
 from cryptography.fernet import Fernet
 
 from agentops_guard.backend.config import get_settings
+from agentops_guard.backend.services.openbao_auth import (
+    OpenBaoAuthenticationUnavailable,
+    OpenBaoTokenProvider,
+    configured_openbao_token_provider,
+    resolve_openbao_token_provider,
+)
 from agentops_guard.backend.telemetry import inject_trace_headers
 
 
@@ -26,8 +32,7 @@ class StoredCredential:
 class CredentialStore(Protocol):
     def store_credential(
         self, credential_ref: str, secret: str, binding: dict[str, Any]
-    ) -> StoredCredential:
-        ...
+    ) -> StoredCredential: ...
 
     def resolve_credential(
         self,
@@ -35,8 +40,7 @@ class CredentialStore(Protocol):
         secret_ref: str,
         binding_proof: str,
         binding: dict[str, Any],
-    ) -> str:
-        ...
+    ) -> str: ...
 
     def rebind_credential(
         self,
@@ -44,8 +48,7 @@ class CredentialStore(Protocol):
         secret_ref: str,
         binding_proof: str,
         binding: dict[str, Any],
-    ) -> str:
-        ...
+    ) -> str: ...
 
 
 class CredentialVault:
@@ -101,13 +104,17 @@ class OpenBaoCredentialStore:
         self,
         *,
         url: str,
-        token: str,
+        token: str | None = None,
+        token_provider: OpenBaoTokenProvider | None = None,
         mount: str = "secret",
         timeout: float = 5.0,
         client: httpx.Client | None = None,
     ) -> None:
         self._url = url.rstrip("/")
-        self._token = token
+        self._token_provider = resolve_openbao_token_provider(
+            token=token,
+            token_provider=token_provider,
+        )
         self._mount = mount
         self._timeout = timeout
         self._client = client
@@ -161,8 +168,8 @@ class OpenBaoCredentialStore:
         try:
             response = self._request_url("GET", "/v1/sys/health")
             response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise CredentialStoreUnavailable("OpenBao health check failed") from exc
+        except (httpx.HTTPError, OpenBaoAuthenticationUnavailable):
+            raise CredentialStoreUnavailable("OpenBao health check failed") from None
 
     def _write(self, credential_ref: str, secret: str, binding_digest: str) -> int:
         try:
@@ -173,8 +180,14 @@ class OpenBaoCredentialStore:
             )
             response.raise_for_status()
             return int(response.json()["data"]["version"])
-        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
-            raise CredentialStoreUnavailable("OpenBao credential write failed") from exc
+        except (
+            httpx.HTTPError,
+            OpenBaoAuthenticationUnavailable,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            raise CredentialStoreUnavailable("OpenBao credential write failed") from None
 
     def _read(self, credential_ref: str) -> tuple[str, str, int]:
         try:
@@ -187,23 +200,48 @@ class OpenBaoCredentialStore:
                 str(values["binding_digest"]),
                 int(data["metadata"]["version"]),
             )
-        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
-            raise CredentialStoreUnavailable("OpenBao credential read failed") from exc
+        except (
+            httpx.HTTPError,
+            OpenBaoAuthenticationUnavailable,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            raise CredentialStoreUnavailable("OpenBao credential read failed") from None
 
     def _request(self, method: str, credential_ref: str, **kwargs: Any) -> httpx.Response:
         path = f"/v1/{quote(self._mount, safe='')}/data/agentops/{quote(credential_ref, safe='')}"
         return self._request_url(method, path, **kwargs)
 
     def _request_url(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        headers = {"X-Vault-Token": self._token}
+        token = self._token_provider.token()
+        headers = {"X-Vault-Token": token} if token is not None else {}
         inject_trace_headers(headers)
         if self._client is not None:
+            response = self._client.request(method, f"{self._url}{path}", headers=headers, **kwargs)
+            if response.status_code not in {401, 403}:
+                return response
+            self._token_provider.invalidate()
+            token = self._token_provider.token()
+            if token is None:
+                headers.pop("X-Vault-Token", None)
+            else:
+                headers["X-Vault-Token"] = token
             return self._client.request(method, f"{self._url}{path}", headers=headers, **kwargs)
         with httpx.Client(
             timeout=self._timeout,
             follow_redirects=False,
             trust_env=False,
         ) as client:
+            response = client.request(method, f"{self._url}{path}", headers=headers, **kwargs)
+            if response.status_code not in {401, 403}:
+                return response
+            self._token_provider.invalidate()
+            token = self._token_provider.token()
+            if token is None:
+                headers.pop("X-Vault-Token", None)
+            else:
+                headers["X-Vault-Token"] = token
             return client.request(method, f"{self._url}{path}", headers=headers, **kwargs)
 
     def _secret_ref(self, credential_ref: str) -> str:
@@ -214,10 +252,9 @@ def configured_credential_store() -> CredentialStore:
     settings = get_settings()
     if settings.credential_store == "openbao":
         assert settings.openbao_url is not None
-        assert settings.openbao_token is not None
         return OpenBaoCredentialStore(
             url=settings.openbao_url,
-            token=settings.openbao_token.get_secret_value(),
+            token_provider=configured_openbao_token_provider(settings),
             mount=settings.openbao_kv_mount,
             timeout=settings.openbao_timeout_seconds,
         )

@@ -1,7 +1,6 @@
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
-from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -11,6 +10,7 @@ from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.database import init_db
 from agentops_guard.backend.observability import RequestContextMiddleware
 from agentops_guard.backend.routes import ops_router, public_router, router
+from agentops_guard.backend.security.middleware import AuthContextLifecycleMiddleware
 from agentops_guard.backend.services.credentials import CredentialVault
 from agentops_guard.backend.telemetry import TelemetryMiddleware, configure_telemetry
 
@@ -45,15 +45,12 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(AuthContextLifecycleMiddleware)
     app.add_middleware(TelemetryMiddleware, component="api")
 
     @app.exception_handler(RequestValidationError)
-    async def validation_error_handler(request, exc):
-        if request.url.path.startswith(("/v1/credentials/", "/v1/deepseek/")):
-            return JSONResponse(
-                status_code=422, content={"detail": "Invalid request"}
-            )
-        return await request_validation_exception_handler(request, exc)
+    async def validation_error_handler(_request, _exc):
+        return JSONResponse(status_code=422, content={"detail": "Invalid request"})
 
     app.include_router(ops_router)
     app.include_router(public_router)

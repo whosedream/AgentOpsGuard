@@ -1,8 +1,9 @@
 services:
   migration:
     build: .
-    command: uv run alembic upgrade head
+    command: uv run agentops-guard-migrate
     environment:
+      AGENTOPS_COMPONENT: migration
       AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
     depends_on:
       postgres:
@@ -12,6 +13,7 @@ services:
     build: .
     command: uv run uvicorn agentops_guard.backend.main:app --host 0.0.0.0 --port 8000
     environment:
+      AGENTOPS_COMPONENT: api
       AGENTOPS_API_KEY: dev-agentops-key
       AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
       AGENTOPS_REDIS_URL: redis://redis:6379/0
@@ -22,16 +24,22 @@ services:
       AGENTOPS_OPENBAO_URL: ${AGENTOPS_OPENBAO_URL:-}
       AGENTOPS_OPENBAO_TOKEN: ${AGENTOPS_OPENBAO_TOKEN:-}
       AGENTOPS_OPENBAO_KV_MOUNT: ${AGENTOPS_OPENBAO_KV_MOUNT:-secret}
+      AGENTOPS_AUDIT_CHECKPOINT_BACKEND: ${AGENTOPS_AUDIT_CHECKPOINT_BACKEND:-disabled}
+      AGENTOPS_OPENBAO_TRANSIT_MOUNT: ${AGENTOPS_OPENBAO_TRANSIT_MOUNT:-transit}
+      AGENTOPS_AUDIT_CHECKPOINT_KEY_NAME: ${AGENTOPS_AUDIT_CHECKPOINT_KEY_NAME:-agentops-audit}
       AGENTOPS_OTEL_ENABLED: "true"
       AGENTOPS_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       AGENTOPS_OTEL_SERVICE_NAME: agentops-guard-api
+      AGENTOPS_OIDC_ISSUER: ${AGENTOPS_OIDC_ISSUER:-}
+      AGENTOPS_OIDC_AUDIENCE: ${AGENTOPS_OIDC_AUDIENCE:-}
+      AGENTOPS_OIDC_JWKS_URL: ${AGENTOPS_OIDC_JWKS_URL:-}
+      AGENTOPS_OIDC_MAX_TOKEN_BYTES: ${AGENTOPS_OIDC_MAX_TOKEN_BYTES:-16384}
+      AGENTOPS_OIDC_MAX_TOKEN_LIFETIME_SECONDS: ${AGENTOPS_OIDC_MAX_TOKEN_LIFETIME_SECONDS:-900}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       migration:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
       opa:
         condition: service_healthy
       otel-collector:
@@ -46,29 +54,35 @@ services:
     build: .
     command: uv run uvicorn agentops_guard.gateway.app:app --host 0.0.0.0 --port 8001
     environment:
+      AGENTOPS_COMPONENT: gateway
       AGENTOPS_API_KEY: dev-agentops-key
       AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
       AGENTOPS_REDIS_URL: redis://redis:6379/0
       AGENTOPS_OPA_URL: http://opa:8181
       AGENTOPS_POLICY_FAIL_MODE: closed_for_high_risk
+      AGENTOPS_GATEWAY_CONCURRENCY_BACKEND: ${AGENTOPS_GATEWAY_CONCURRENCY_BACKEND:-local}
+      AGENTOPS_GATEWAY_CONCURRENCY_LEASE_SECONDS: ${AGENTOPS_GATEWAY_CONCURRENCY_LEASE_SECONDS:-60}
+      AGENTOPS_MCP_PUBLIC_URL: ${AGENTOPS_MCP_PUBLIC_URL:-http://localhost:8001/mcp}
+      AGENTOPS_MCP_ALLOWED_HOSTS: ${AGENTOPS_MCP_ALLOWED_HOSTS:-localhost,localhost:*,127.0.0.1,127.0.0.1:*}
+      AGENTOPS_MCP_ALLOWED_ORIGINS: ${AGENTOPS_MCP_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      AGENTOPS_MCP_PAGE_SIZE: ${AGENTOPS_MCP_PAGE_SIZE:-100}
       AGENTOPS_SEMANTIC_SCANNER_MODE: ${AGENTOPS_SEMANTIC_SCANNER_MODE:-disabled}
-      AGENTOPS_SEMANTIC_MODEL_PATH: /models/semantic-guard
-      AGENTOPS_SEMANTIC_MODEL_SHA256: ${AGENTOPS_SEMANTIC_MODEL_SHA256:-}
       AGENTOPS_SEMANTIC_SCANNER_THRESHOLD: ${AGENTOPS_SEMANTIC_SCANNER_THRESHOLD:-0.90}
-      HF_HUB_OFFLINE: "1"
-      TRANSFORMERS_OFFLINE: "1"
+      AGENTOPS_SEMANTIC_SERVICE_URL: http://semantic-scanner:8090
+      AGENTOPS_SEMANTIC_SERVICE_TIMEOUT_SECONDS: ${AGENTOPS_SEMANTIC_SERVICE_TIMEOUT_SECONDS:-2}
       AGENTOPS_OTEL_ENABLED: "true"
       AGENTOPS_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       AGENTOPS_OTEL_SERVICE_NAME: agentops-guard-gateway
-    volumes:
-      - ${AGENTOPS_SEMANTIC_MODEL_DIR:-./models/semantic-guard}:/models/semantic-guard:ro
+      AGENTOPS_OIDC_ISSUER: ${AGENTOPS_OIDC_ISSUER:-}
+      AGENTOPS_OIDC_AUDIENCE: ${AGENTOPS_OIDC_AUDIENCE:-}
+      AGENTOPS_OIDC_JWKS_URL: ${AGENTOPS_OIDC_JWKS_URL:-}
+      AGENTOPS_OIDC_MAX_TOKEN_BYTES: ${AGENTOPS_OIDC_MAX_TOKEN_BYTES:-16384}
+      AGENTOPS_OIDC_MAX_TOKEN_LIFETIME_SECONDS: ${AGENTOPS_OIDC_MAX_TOKEN_LIFETIME_SECONDS:-900}
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     depends_on:
       migration:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
       opa:
         condition: service_healthy
       otel-collector:
@@ -79,11 +93,44 @@ services:
       timeout: 5s
       retries: 12
 
+  semantic-scanner:
+    profiles: ["semantic"]
+    build: .
+    command: uv run uvicorn agentops_guard.semantic_service.app:app --host 0.0.0.0 --port 8090
+    environment:
+      AGENTOPS_COMPONENT: semantic_scanner
+      AGENTOPS_SEMANTIC_SCANNER_MODE: shadow
+      AGENTOPS_SEMANTIC_MODEL_PATH: /models/semantic-guard
+      AGENTOPS_SEMANTIC_MODEL_SHA256: ${AGENTOPS_SEMANTIC_MODEL_SHA256:-}
+      AGENTOPS_SEMANTIC_SCANNER_THRESHOLD: ${AGENTOPS_SEMANTIC_SCANNER_THRESHOLD:-0.90}
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    volumes:
+      - ${AGENTOPS_SEMANTIC_MODEL_DIR:-./models/semantic-guard}:/models/semantic-guard:ro
+    expose:
+      - "8090"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/readyz', timeout=15).read()"]
+      interval: 15s
+      timeout: 20s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 3G
+
   worker:
     build: .
     command: uv run agentops-guard worker --queue default --with-scheduler
     environment:
-      AGENTOPS_API_KEY: dev-agentops-key
+      AGENTOPS_COMPONENT: worker
       AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
       AGENTOPS_REDIS_URL: redis://redis:6379/0
       AGENTOPS_OPA_URL: http://opa:8181
@@ -101,6 +148,24 @@ services:
       otel-collector:
         condition: service_started
 
+  outbox-dispatcher:
+    build: .
+    command: uv run agentops-guard outbox-dispatcher --dispatcher-id compose-1
+    environment:
+      AGENTOPS_COMPONENT: outbox_dispatcher
+      AGENTOPS_DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
+      AGENTOPS_REDIS_URL: redis://redis:6379/0
+      AGENTOPS_OTEL_ENABLED: "true"
+      AGENTOPS_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      AGENTOPS_OTEL_SERVICE_NAME: agentops-guard-outbox-dispatcher
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
   dashboard:
     image: node:22-bookworm-slim
     working_dir: /app/dashboard
@@ -111,10 +176,20 @@ services:
       AGENTOPS_SERVER_API_KEY: dev-agentops-key
       NODE_ENV: production
     volumes:
-      - .:/app
+      - ./dashboard/package.json:/app/dashboard/package.json:ro
+      - ./dashboard/package-lock.json:/app/dashboard/package-lock.json:ro
+      - ./dashboard/app:/app/dashboard/app:ro
+      - ./dashboard/components:/app/dashboard/components:ro
+      - ./dashboard/lib:/app/dashboard/lib:ro
+      - ./dashboard/next-env.d.ts:/app/dashboard/next-env.d.ts:ro
+      - ./dashboard/next.config.js:/app/dashboard/next.config.js:ro
+      - ./dashboard/postcss.config.js:/app/dashboard/postcss.config.js:ro
+      - ./dashboard/tailwind.config.ts:/app/dashboard/tailwind.config.ts:ro
+      - ./dashboard/tsconfig.json:/app/dashboard/tsconfig.json:ro
       - dashboard_node_modules:/app/dashboard/node_modules
+      - dashboard_next:/app/dashboard/.next
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       api:
         condition: service_healthy
@@ -133,7 +208,7 @@ services:
       POSTGRES_USER: agentops
       POSTGRES_PASSWORD: agentops
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -145,7 +220,7 @@ services:
   redis:
     image: redis:7
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -153,12 +228,12 @@ services:
       retries: 20
 
   opa:
-    image: ${AGENTOPS_OPA_IMAGE:-openpolicyagent/opa:1.8.0-debug}
-    command: ["run", "--server", "--addr=0.0.0.0:8181", "--log-format=json", "/policies"]
+    image: ${AGENTOPS_OPA_IMAGE:-openpolicyagent/opa:1.20.1-debug}
+    command: ["run", "--server", "--disable-telemetry", "--addr=0.0.0.0:8181", "--log-format=json", "/policies"]
     volumes:
       - ./policies:/policies:ro
     ports:
-      - "8181:8181"
+      - "127.0.0.1:8181:8181"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8181/health?bundles=true&plugins=true"]
       interval: 5s
@@ -166,15 +241,27 @@ services:
       retries: 20
 
   otel-collector:
-    image: ${AGENTOPS_OTEL_COLLECTOR_IMAGE:-otel/opentelemetry-collector-contrib:0.136.0}
+    image: ${AGENTOPS_OTEL_COLLECTOR_IMAGE:-otel/opentelemetry-collector-contrib:0.160.0}
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "10001:10001"
+    read_only: true
+    init: true
+    pids_limit: 128
+    mem_limit: 384m
+    cpus: 1.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ./deploy/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
     ports:
-      - "4317:4317"
-      - "4318:4318"
-      - "13133:13133"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:13133:13133"
 
 volumes:
   postgres_data:
   dashboard_node_modules:
+  dashboard_next:

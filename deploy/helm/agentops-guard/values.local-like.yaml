@@ -1,2 +1,7 @@
 env:
   AGENTOPS_ENV: dev
+
+mcp:
+  publicUrl: http://localhost:8001/mcp
+  allowedHosts: localhost,localhost:*,127.0.0.1,127.0.0.1:*
+  allowedOrigins: http://localhost:3000,http://127.0.0.1:3000

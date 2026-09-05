@@ -15,6 +15,7 @@ class AuthContext:
     scopes: list[str] = field(default_factory=list)
     capabilities: list[str] = field(default_factory=list)
     key_id: str | None = None
+    agent_id: str | None = None
     actor_id: str | None = None
     user_id: str | None = None
     user_email: str | None = None
@@ -26,11 +27,11 @@ class AuthContext:
 
     @property
     def is_project_key(self) -> bool:
-        return self.kind == "api_key"
+        return self.kind in {"api_key", "workload_token"}
 
     @property
     def is_session_user(self) -> bool:
-        return self.kind == "session_user"
+        return self.kind in {"session_user", "oidc_user"}
 
 
 _current_auth: ContextVar[AuthContext | None] = ContextVar("agentops_auth_context", default=None)

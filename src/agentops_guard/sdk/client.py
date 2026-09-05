@@ -115,8 +115,8 @@ class AgentOpsClient:
             response = self._client.post(f"{self.base_url}{path}", json=payload)
             response.raise_for_status()
             return response.json()
-        except httpx.HTTPError as exc:
-            logger.warning("AgentOps Guard request failed: %s", exc)
+        except httpx.HTTPError:
+            logger.warning("AgentOps Guard request failed")
             if self.fail_closed and path != "/v1/events":
                 raise
             return None
@@ -126,8 +126,8 @@ class AgentOpsClient:
             response = self._client.patch(f"{self.base_url}{path}", json=payload)
             response.raise_for_status()
             return response.json()
-        except httpx.HTTPError as exc:
-            logger.warning("AgentOps Guard request failed: %s", exc)
+        except httpx.HTTPError:
+            logger.warning("AgentOps Guard request failed")
             if self.fail_closed:
                 raise
             return None

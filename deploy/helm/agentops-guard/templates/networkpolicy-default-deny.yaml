@@ -1,0 +1,276 @@
+{{- if and .Values.networkPolicy.requireExplicitExternalEgress (not .Values.networkPolicy.enabled) -}}
+{{- fail "networkPolicy.enabled is required when explicit production egress is required" -}}
+{{- end -}}
+{{- if .Values.networkPolicy.enabled -}}
+{{- if .Values.networkPolicy.requireExplicitExternalEgress -}}
+{{- if empty .Values.networkPolicy.ingressController.namespaceSelector -}}
+{{- fail "networkPolicy.ingressController.namespaceSelector is required for production" -}}
+{{- end -}}
+{{- if empty .Values.networkPolicy.ingressController.podSelector -}}
+{{- fail "networkPolicy.ingressController.podSelector is required for production" -}}
+{{- end -}}
+{{- if or (empty .Values.networkPolicy.ingressController.namespaceSelector.matchLabels) .Values.networkPolicy.ingressController.namespaceSelector.matchExpressions -}}
+{{- fail "networkPolicy.ingressController.namespaceSelector must use at least one exact matchLabel and no expressions" -}}
+{{- end -}}
+{{- if or (empty .Values.networkPolicy.ingressController.podSelector.matchLabels) .Values.networkPolicy.ingressController.podSelector.matchExpressions -}}
+{{- fail "networkPolicy.ingressController.podSelector must use at least one exact matchLabel and no expressions" -}}
+{{- end -}}
+{{- if or (empty .Values.networkPolicy.dns.namespaceSelector.matchLabels) .Values.networkPolicy.dns.namespaceSelector.matchExpressions -}}
+{{- fail "networkPolicy.dns.namespaceSelector must use at least one exact matchLabel and no expressions" -}}
+{{- end -}}
+{{- if or (empty .Values.networkPolicy.dns.podSelector.matchLabels) .Values.networkPolicy.dns.podSelector.matchExpressions -}}
+{{- fail "networkPolicy.dns.podSelector must use at least one exact matchLabel and no expressions" -}}
+{{- end -}}
+{{- range $name := list "api" "gateway" "worker" "outboxDispatcher" "migration" -}}
+{{- if empty (index $.Values.networkPolicy.externalEgress $name) -}}
+{{- fail (printf "networkPolicy.externalEgress.%s must explicitly declare production destinations" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.auditAnchorExporter.enabled (empty .Values.networkPolicy.externalEgress.auditAnchorExporter) -}}
+{{- fail "networkPolicy.externalEgress.auditAnchorExporter must explicitly declare production destinations" -}}
+{{- end -}}
+{{- end -}}
+{{- range $name, $rules := .Values.networkPolicy.externalEgress -}}
+{{- if not (has $name (list "api" "gateway" "worker" "outboxDispatcher" "auditAnchorExporter" "migration")) -}}
+{{- fail (printf "networkPolicy.externalEgress contains unsupported workload %s" $name) -}}
+{{- end -}}
+{{- range $rule := $rules -}}
+{{- if empty $rule.to -}}
+{{- fail (printf "networkPolicy.externalEgress.%s rules require at least one destination" $name) -}}
+{{- end -}}
+{{- if empty $rule.ports -}}
+{{- fail (printf "networkPolicy.externalEgress.%s rules require explicit ports" $name) -}}
+{{- end -}}
+{{- range $peer := $rule.to -}}
+{{- if not (or (hasKey $peer "ipBlock") (hasKey $peer "podSelector") (hasKey $peer "namespaceSelector")) -}}
+{{- fail (printf "networkPolicy.externalEgress.%s contains a destination without a selector or CIDR" $name) -}}
+{{- end -}}
+{{- if and (hasKey $peer "podSelector") (empty $peer.podSelector) -}}
+{{- fail (printf "networkPolicy.externalEgress.%s must not use an empty pod selector" $name) -}}
+{{- end -}}
+{{- if and (hasKey $peer "podSelector") (or (empty $peer.podSelector.matchLabels) $peer.podSelector.matchExpressions) -}}
+{{- fail (printf "networkPolicy.externalEgress.%s pod selectors require exact matchLabels and no expressions" $name) -}}
+{{- end -}}
+{{- if and (hasKey $peer "namespaceSelector") (empty $peer.namespaceSelector) -}}
+{{- fail (printf "networkPolicy.externalEgress.%s must not use an empty namespace selector" $name) -}}
+{{- end -}}
+{{- if and (hasKey $peer "namespaceSelector") (or (empty $peer.namespaceSelector.matchLabels) $peer.namespaceSelector.matchExpressions) -}}
+{{- fail (printf "networkPolicy.externalEgress.%s namespace selectors require exact matchLabels and no expressions" $name) -}}
+{{- end -}}
+{{- if and (hasKey $peer "ipBlock") (empty $peer.ipBlock) -}}
+{{- fail (printf "networkPolicy.externalEgress.%s must not use an empty IP block" $name) -}}
+{{- end -}}
+{{- if hasKey $peer "ipBlock" -}}
+{{- if has $peer.ipBlock.cidr (list "0.0.0.0/0" "::/0") -}}
+{{- fail (printf "networkPolicy.externalEgress.%s must not allow an all-address CIDR" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- range $port := $rule.ports -}}
+{{- $number := int $port.port -}}
+{{- if or (lt $number 1) (gt $number 65535) -}}
+{{- fail (printf "networkPolicy.externalEgress.%s requires numeric ports from 1 through 65535" $name) -}}
+{{- end -}}
+{{- if not (has (default "" $port.protocol) (list "TCP" "UDP")) -}}
+{{- fail (printf "networkPolicy.externalEgress.%s protocol must be TCP or UDP" $name) -}}
+{{- end -}}
+{{- if $port.endPort -}}
+{{- fail (printf "networkPolicy.externalEgress.%s must use individual ports rather than ranges" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentops-guard.name" . }}-default-deny
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+  ingress: []
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentops-guard.name" . }}-gateway-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: agentops-guard-gateway
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.ingressController.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.ingressController.podSelector | nindent 12 }}
+      ports:
+        - protocol: TCP
+          port: 8001
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentops-guard.name" . }}-dashboard-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: agentops-guard-dashboard
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.ingressController.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.ingressController.podSelector | nindent 12 }}
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentops-guard.name" . }}-api-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: agentops-guard-api
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-dashboard
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-gateway
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentops-guard.name" . }}-dns-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - agentops-guard-api
+          - agentops-guard-audit-anchor-exporter
+          - agentops-guard-dashboard
+          - agentops-guard-gateway
+          - agentops-guard-migration
+          - agentops-guard-outbox-dispatcher
+          - agentops-guard-worker
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.dns.podSelector | nindent 12 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentops-guard.name" . }}-dashboard-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: agentops-guard-dashboard
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-api
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentops-guard.name" . }}-gateway-internal-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: agentops-guard-gateway
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-api
+      ports:
+        - protocol: TCP
+          port: 8000
+    {{- if ne .Values.semanticScanner.mode "disabled" }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-semantic-scanner
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.semanticScannerPort }}
+    {{- end }}
+    {{- if .Values.opa.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-opa
+      ports:
+        - protocol: TCP
+          port: 8181
+    {{- end }}
+{{- if .Values.opa.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentops-guard.name" . }}-opa-client-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - agentops-guard-api
+          - agentops-guard-worker
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-opa
+      ports:
+        - protocol: TCP
+          port: 8181
+{{- end }}
+{{- $workloads := dict "api" "agentops-guard-api" "gateway" "agentops-guard-gateway" "worker" "agentops-guard-worker" "outboxDispatcher" "agentops-guard-outbox-dispatcher" "auditAnchorExporter" "agentops-guard-audit-anchor-exporter" "migration" "agentops-guard-migration" -}}
+{{- range $name, $rules := .Values.networkPolicy.externalEgress }}
+{{- if $rules }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentops-guard.name" $ }}-{{ kebabcase $name }}-external-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ index $workloads $name }}
+  policyTypes: ["Egress"]
+  egress:
+    {{- toYaml $rules | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}

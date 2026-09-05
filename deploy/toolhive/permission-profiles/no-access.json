@@ -1,0 +1,15 @@
+{
+  "name": "agentops-no-access",
+  "read": [],
+  "write": [],
+  "network": {
+    "mode": "none",
+    "outbound": {
+      "insecure_allow_all": false,
+      "allow_host": [],
+      "allow_port": []
+    },
+    "inbound": {}
+  },
+  "privileged": false
+}

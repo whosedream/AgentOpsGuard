@@ -1,4 +1,23 @@
 {{- if .Values.opa.enabled }}
+{{- if and .Values.supplyChain.requireImageDigests (not .Values.opa.bundle.enabled) }}
+{{- fail "opa.bundle.enabled is required for production embedded OPA" }}
+{{- end }}
+{{- if .Values.opa.bundle.enabled }}
+{{- $bundleSecret := required "opa.bundle.existingSecret is required when signed bundles are enabled" .Values.opa.bundle.existingSecret }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" $bundleSecret) }}
+{{- fail "opa.bundle.existingSecret must be a Kubernetes DNS-compatible Secret name" }}
+{{- end }}
+{{- if not (regexMatch "^[A-Za-z0-9._:-]+$" .Values.opa.bundle.verificationKeyId) }}
+{{- fail "opa.bundle.verificationKeyId contains unsupported characters" }}
+{{- end }}
+{{- if not (regexMatch "^[A-Za-z0-9._:-]+$" .Values.opa.bundle.scope) }}
+{{- fail "opa.bundle.scope contains unsupported characters" }}
+{{- end }}
+{{- $expectedPolicyRevision := required "opa.bundle.expectedPolicyRevision is required when signed bundles are enabled" .Values.opa.bundle.expectedPolicyRevision }}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" $expectedPolicyRevision) }}
+{{- fail "opa.bundle.expectedPolicyRevision must be an exact policy revision" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,17 +32,42 @@ spec:
       labels:
         app: agentops-guard-opa
     spec:
+      serviceAccountName: {{ required "serviceAccounts.opa is required" .Values.serviceAccounts.opa | quote }}
+      automountServiceAccountToken: false
+      {{- include "agentops-guard.podSecurityContext" . | nindent 6 }}
+      {{- if .Values.opa.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range .Values.opa.image.pullSecrets }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
       containers:
         - name: opa
-          image: "{{ .Values.opa.image.repository }}:{{ .Values.opa.image.tag }}"
+          image: {{ include "agentops-guard.opaImage" . | quote }}
           imagePullPolicy: {{ .Values.opa.image.pullPolicy }}
-          args: ["run", "--server", "--addr=0.0.0.0:8181", "--log-format=json", "/policies"]
+          {{- include "agentops-guard.containerSecurityContext" . | nindent 10 }}
+          {{- if .Values.opa.bundle.enabled }}
+          args:
+            - run
+            - --server
+            - --disable-telemetry
+            - --addr=0.0.0.0:8181
+            - --log-format=json
+            - --bundle=/policy/bundle.tar.gz
+            - --verification-key=/policy/public.pem
+            - --verification-key-id={{ .Values.opa.bundle.verificationKeyId }}
+            - --scope={{ .Values.opa.bundle.scope }}
+          {{- else }}
+          args: ["run", "--server", "--disable-telemetry", "--addr=0.0.0.0:8181", "--log-format=json", "/policies"]
+          {{- end }}
           ports:
             - containerPort: 8181
           volumeMounts:
             - name: policy
-              mountPath: /policies
+              mountPath: {{ ternary "/policy" "/policies" .Values.opa.bundle.enabled }}
               readOnly: true
+            - name: temporary-files
+              mountPath: /tmp
           readinessProbe:
             httpGet:
               path: /health?bundles=true&plugins=true
@@ -35,7 +79,20 @@ spec:
           resources:
             {{- toYaml .Values.opa.resources | nindent 12 }}
       volumes:
+        - name: temporary-files
+          emptyDir: {}
         - name: policy
+          {{- if .Values.opa.bundle.enabled }}
+          secret:
+            secretName: {{ .Values.opa.bundle.existingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: bundle.tar.gz
+                path: bundle.tar.gz
+              - key: public.pem
+                path: public.pem
+          {{- else }}
           configMap:
             name: {{ include "agentops-guard.name" . }}-opa-policy
+          {{- end }}
 {{- end }}

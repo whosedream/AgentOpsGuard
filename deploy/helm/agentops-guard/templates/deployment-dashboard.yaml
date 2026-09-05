@@ -12,16 +12,34 @@ spec:
       labels:
         app: agentops-guard-dashboard
     spec:
+      serviceAccountName: {{ required "serviceAccounts.dashboard is required" .Values.serviceAccounts.dashboard | quote }}
+      automountServiceAccountToken: false
+      {{- include "agentops-guard.podSecurityContext" . | nindent 6 }}
+      {{- if .Values.dashboardImage.pullSecrets }}
+      imagePullSecrets:
+        {{- range .Values.dashboardImage.pullSecrets }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
       containers:
         - name: dashboard
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["npm", "run", "start"]
+          image: {{ include "agentops-guard.dashboardImage" . | quote }}
+          imagePullPolicy: {{ .Values.dashboardImage.pullPolicy }}
+          {{- include "agentops-guard.containerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: temporary-files
+              mountPath: /tmp
+            - name: dashboard-cache
+              mountPath: /app/.next/cache
           envFrom:
             - configMapRef:
                 name: {{ include "agentops-guard.name" . }}-config
-            - secretRef:
-                name: {{ include "agentops-guard.name" . }}-secret
+          env:
+            - name: AGENTOPS_SERVER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "runtimeSecret.existingSecret is required" .Values.runtimeSecret.existingSecret | quote }}
+                  key: {{ .Values.runtimeSecret.dashboardApiKeyKey | quote }}
           ports:
             - containerPort: 3000
           readinessProbe:
@@ -34,3 +52,8 @@ spec:
               port: 3000
           resources:
             {{- toYaml .Values.resources.dashboard | nindent 12 }}
+      volumes:
+        - name: temporary-files
+          emptyDir: {}
+        - name: dashboard-cache
+          emptyDir: {}

@@ -1,0 +1,14 @@
+*
+!package.json
+!package-lock.json
+!app
+!app/**
+!components
+!components/**
+!lib
+!lib/**
+!next-env.d.ts
+!next.config.js
+!postcss.config.js
+!tailwind.config.ts
+!tsconfig.json

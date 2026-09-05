@@ -3,6 +3,7 @@ import binascii
 import importlib
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -27,12 +28,16 @@ from agentops_guard.backend.services.semantic_scanner import (
     SemanticScannerUnavailable,
     get_semantic_scanner,
 )
+from agentops_guard.backend.services.safe_regex import (
+    SafeRegexError,
+    compile_configurable_pattern,
+)
 
 
 @dataclass(frozen=True)
 class ScannerRule:
     label: str
-    pattern: re.Pattern[str]
+    pattern: Any
     severity: str
     score: float
     untrusted_only: bool = False
@@ -305,6 +310,18 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
         try:
             findings = provider.scan(request, texts, db)
         except Exception:
+            if "scanner_provider_error" not in labels:
+                labels.append("scanner_provider_error")
+            severities.append("high")
+            score = max(score, 0.8)
+            evidence.append(
+                EvidenceSpan(
+                    label="scanner_provider_error",
+                    start=0,
+                    end=0,
+                    snippet="[REDACTED:scanner_provider_error]",
+                )
+            )
             continue
         for finding in findings:
             if finding.label not in labels:
@@ -491,8 +508,8 @@ def _active_rules(project_id: str, db: Session | None) -> list[ScannerRule]:
     )
     for row in rows:
         try:
-            pattern = re.compile(row.pattern, re.I)
-        except re.error:
+            pattern = compile_configurable_pattern(row.pattern)
+        except SafeRegexError:
             continue
         rules.append(ScannerRule(row.label, pattern, row.severity, row.score))
     return rules

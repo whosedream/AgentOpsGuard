@@ -10,6 +10,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Protocol
 
+import httpx
+
 from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.schemas import ScanRequest, SemanticAssessment
 from agentops_guard.backend.services.content import redact_text
@@ -20,7 +22,7 @@ SEMANTIC_MODEL_ID = (
     "eff31df5c97ca127b7b55da255a160f88a625c97"
 )
 SEMANTIC_MANIFEST_SHA256 = "06bcefdafa24f95cd9901d8a46ec0f295ac144e89c9618197733948987c3bec4"
-MAX_MODEL_CHARACTERS = 512
+MAX_MODEL_CHARACTERS = 1_024
 MAX_MODEL_WINDOWS = 2
 MODEL_BATCH_SIZE = 1
 SEMANTIC_SOURCES = frozenset(
@@ -190,18 +192,7 @@ class SemanticScanner:
     def assess(self, request: ScanRequest) -> SemanticAssessment | None:
         if request.source not in SEMANTIC_SOURCES:
             return None
-        normalized = unicodedata.normalize("NFKC", request.content)
-        normalized = "".join(
-            character for character in normalized if unicodedata.category(character) != "Cf"
-        )
-        normalized = re.sub(
-            r"[A-Za-z0-9+/=]{32,}",
-            "[REDACTED:encoded_token]",
-            normalized,
-        )
-        for pattern in MODEL_SECRET_PATTERNS:
-            normalized = pattern.sub("[REDACTED:credential]", normalized)
-        safe_text = redact_text(normalized) or ""
+        safe_text = _safe_model_text(request.content)
         try:
             score = self.backend.predict(safe_text)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -215,13 +206,65 @@ class SemanticScanner:
         )
 
     def warm(self) -> None:
-        self.backend.predict("health check")
+        try:
+            self.backend.predict("health check")
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise SemanticScannerUnavailable("semantic model warmup failed") from exc
 
 
-def get_semantic_scanner() -> SemanticScanner | None:
+class RemoteSemanticScanner:
+    def __init__(self, service_url: str, mode: str, threshold: float, timeout: float) -> None:
+        self.service_url = service_url.rstrip("/")
+        self.mode = mode
+        self.threshold = threshold
+        self.timeout = timeout
+
+    def assess(self, request: ScanRequest) -> SemanticAssessment | None:
+        if request.source not in SEMANTIC_SOURCES:
+            return None
+        score = self._score(_safe_model_text(request.content))
+        return SemanticAssessment(
+            status="ok",
+            mode=self.mode,
+            label="prompt_injection" if score >= self.threshold else "benign",
+            score=score,
+            model=SEMANTIC_MODEL_ID,
+        )
+
+    def warm(self) -> None:
+        try:
+            with httpx.Client(timeout=self.timeout, follow_redirects=False, trust_env=False) as client:
+                response = client.get(f"{self.service_url}/readyz")
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise SemanticScannerUnavailable("semantic model service is unavailable") from exc
+
+    def _score(self, text: str) -> float:
+        try:
+            with httpx.Client(timeout=self.timeout, follow_redirects=False, trust_env=False) as client:
+                response = client.post(f"{self.service_url}/v1/score", json={"text": text})
+                response.raise_for_status()
+                result = response.json()
+            score = float(result["score"])
+            if result.get("model") != SEMANTIC_MODEL_ID or not 0.0 <= score <= 1.0:
+                raise ValueError("invalid semantic service response")
+            return score
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            raise SemanticScannerUnavailable("semantic model service inference failed") from exc
+
+
+def get_semantic_scanner() -> SemanticScanner | RemoteSemanticScanner | None:
     settings = get_settings()
     if settings.semantic_scanner_mode == "disabled":
         return None
+    if settings.semantic_service_url is not None:
+        return _cached_remote_semantic_scanner(
+            settings.semantic_service_url,
+            settings.semantic_scanner_mode,
+            settings.semantic_scanner_threshold,
+            settings.semantic_service_timeout_seconds,
+        )
+    assert settings.semantic_model_path is not None
     return _cached_semantic_scanner(
         str(settings.semantic_model_path),
         settings.semantic_model_sha256 or "",
@@ -241,6 +284,16 @@ def _cached_semantic_scanner(
 
 
 @lru_cache
+def _cached_remote_semantic_scanner(
+    service_url: str,
+    mode: str,
+    threshold: float,
+    timeout: float,
+) -> RemoteSemanticScanner:
+    return RemoteSemanticScanner(service_url, mode, threshold, timeout)
+
+
+@lru_cache
 def semantic_scanner_ready() -> bool:
     scanner = get_semantic_scanner()
     if scanner is None:
@@ -254,10 +307,25 @@ def _file_sha256(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
+def _safe_model_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text)
+    normalized = "".join(
+        character for character in normalized if unicodedata.category(character) != "Cf"
+    )
+    normalized = re.sub(
+        r"[A-Za-z0-9+/=]{32,}",
+        "[REDACTED:encoded_token]",
+        normalized,
+    )
+    for pattern in MODEL_SECRET_PATTERNS:
+        normalized = pattern.sub("[REDACTED:credential]", normalized)
+    return _bounded_model_text(redact_text(normalized) or "")
+
+
 def _bounded_model_text(text: str) -> str:
     if len(text) <= MAX_MODEL_CHARACTERS:
         return text
-    segment_length = MAX_MODEL_CHARACTERS // 3
+    segment_length = (MAX_MODEL_CHARACTERS - 2) // 3
     middle_start = (len(text) - segment_length) // 2
     return "\n".join(
         (

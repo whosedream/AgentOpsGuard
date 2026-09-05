@@ -97,6 +97,7 @@ def test_opa_deny_overrides_builtin_allow_and_records_provider(monkeypatch):
             "reason_code": "project_policy",
             "matched_policy": "opa:project_policy",
             "policy_revision": "test-v2",
+            "bundle_revision": "bundle-sha256:abc123",
         },
     )
 
@@ -105,6 +106,30 @@ def test_opa_deny_overrides_builtin_allow_and_records_provider(monkeypatch):
     assert decision.action == "deny"
     assert decision.context["policy_provider"] == "opa"
     assert decision.context["policy_revision"] == "test-v2"
+    assert decision.context["opa_bundle_revision"] == "bundle-sha256:abc123"
+
+
+def test_opa_never_receives_detectable_secrets(monkeypatch):
+    canary = "sk-abcdefghijklmnopqrstuvwxyz123456"
+    captured: dict = {}
+    monkeypatch.setattr(
+        policy_service,
+        "get_settings",
+        lambda: SimpleNamespace(opa_url="http://opa.test", policy_fail_mode="closed_for_high_risk"),
+    )
+
+    def fake_opa(input_document):
+        captured.update(input_document)
+        return {"action": "deny", "reason_code": "project_policy"}
+
+    monkeypatch.setattr(policy_service, "evaluate_opa", fake_opa)
+
+    decision = evaluate_policy(
+        PolicyContext(tool={"name": "records.read", "args": {"token": canary}})
+    )
+
+    assert canary not in str(captured)
+    assert canary not in str(decision.model_dump())
 
 
 def test_opa_failure_requires_approval_for_risky_context(monkeypatch):
@@ -154,6 +179,46 @@ def test_normal_reference_to_email_does_not_authorize_sending():
 
     assert alignment["action_aligned"] is False
     assert alignment["aligned"] is False
+
+
+def test_email_categorization_scope_authorizes_requested_batch_mutation():
+    manifest = build_user_intent_manifest("Categorize every email in the inbox.")
+
+    alignment = assess_tool_action_alignment(
+        "write_action",
+        {
+            "source_tool": "categorize_email",
+            "arguments": {"email_index": 3, "category": "important"},
+        },
+        {},
+        manifest,
+    )
+
+    assert manifest["actions"] == ["write"]
+    assert manifest["target_scopes"] == ["email"]
+    assert alignment["target_scopes"] == ["email"]
+    assert alignment["aligned"] is True
+
+
+def test_risky_untrusted_content_can_only_raise_a_mutation_to_approval():
+    decision = evaluate_policy(
+        PolicyContext(
+            tool={"name": "write_action"},
+            data={
+                "untrusted_content_risk": True,
+                "action_alignment": {
+                    "required": True,
+                    "intent_present": True,
+                    "action_aligned": True,
+                    "target_aligned": True,
+                    "aligned": True,
+                },
+            },
+        )
+    )
+
+    assert decision.action == "require_approval"
+    assert decision.reason_code == "untrusted_content_influenced_mutation"
 
 
 def test_mutating_tool_name_categories_require_trusted_intent():

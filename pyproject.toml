@@ -9,6 +9,7 @@ description = "Self-hosted Agent tracing, evaluation, and security gateway for M
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "boto3>=1.43,<2",
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.30.0",
   "pydantic>=2.8.0",
@@ -24,10 +25,15 @@ dependencies = [
   "typer>=0.12.0",
   "rich>=13.7.0",
   "cryptography>=45.0.0",
-  "mcp>=1.29.0,<2",
+  "mcp>=2.0.0,<3",
+  "httpx2>=2.5.0,<3",
+  "jsonschema>=4.23,<5",
   "opentelemetry-api>=1.36,<2",
   "opentelemetry-sdk>=1.36,<2",
   "opentelemetry-exporter-otlp-proto-grpc>=1.36,<2",
+  "pyjwt[crypto]>=2.10,<3",
+  "rfc8785==0.1.4",
+  "google-re2==1.1.20251105",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +51,7 @@ semantic = [
 
 [project.scripts]
 agentops-guard = "agentops_guard.cli:app"
+agentops-guard-migrate = "agentops_guard.migration_cli:main"
 
 [tool.uv]
 package = true

@@ -1,0 +1,142 @@
+{{- if .Values.auditAnchorExporter.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentops-guard-audit-anchor-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agentops-guard-audit-anchor-exporter
+  template:
+    metadata:
+      labels:
+        app: agentops-guard-audit-anchor-exporter
+    spec:
+      serviceAccountName: {{ required "auditAnchorExporter.serviceAccountName is required" .Values.auditAnchorExporter.serviceAccountName | quote }}
+      automountServiceAccountToken: false
+      {{- include "agentops-guard.podSecurityContext" . | nindent 6 }}
+      {{- if .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range .Values.image.pullSecrets }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: audit-anchor-exporter
+          image: {{ include "agentops-guard.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - agentops-guard
+            - audit-anchor-exporter
+            - --poll-seconds
+            - {{ .Values.auditAnchorExporter.pollSeconds | quote }}
+          {{- include "agentops-guard.containerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: temporary-files
+              mountPath: /tmp
+          env:
+            - name: AGENTOPS_ENV
+              value: {{ .Values.env.AGENTOPS_ENV | quote }}
+            - name: AGENTOPS_COMPONENT
+              value: audit_anchor_exporter
+            - name: AGENTOPS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "auditAnchorExporter.databaseExistingSecret is required" .Values.auditAnchorExporter.databaseExistingSecret | quote }}
+                  key: {{ .Values.auditAnchorExporter.databaseUrlKey | quote }}
+            - name: AGENTOPS_AUDIT_CHECKPOINT_BACKEND
+              value: openbao
+            - name: AGENTOPS_OPENBAO_URL
+              value: {{ printf "http://127.0.0.1:%v" .Values.openbaoProxy.port | quote }}
+            - name: AGENTOPS_OPENBAO_TIMEOUT_SECONDS
+              value: {{ .Values.credentialStore.openbaoTimeoutSeconds | quote }}
+            - name: AGENTOPS_OPENBAO_AUTH_METHOD
+              value: proxy
+            - name: AGENTOPS_OPENBAO_TRANSIT_MOUNT
+              value: {{ .Values.auditCheckpoints.openbaoTransitMount | quote }}
+            - name: AGENTOPS_AUDIT_CHECKPOINT_KEY_NAME
+              value: {{ .Values.auditCheckpoints.keyName | quote }}
+            - name: AGENTOPS_AUDIT_ANCHOR_BACKEND
+              value: s3_object_lock
+            - name: AGENTOPS_AUDIT_ANCHOR_S3_BUCKET
+              value: {{ required "auditAnchorExporter.bucket is required" .Values.auditAnchorExporter.bucket | quote }}
+            - name: AGENTOPS_AUDIT_ANCHOR_S3_PREFIX
+              value: {{ .Values.auditAnchorExporter.prefix | quote }}
+            - name: AGENTOPS_AUDIT_ANCHOR_S3_RETENTION_DAYS
+              value: {{ .Values.auditAnchorExporter.retentionDays | quote }}
+            {{- if .Values.auditAnchorExporter.region }}
+            - name: AGENTOPS_AUDIT_ANCHOR_S3_REGION
+              value: {{ .Values.auditAnchorExporter.region | quote }}
+            {{- end }}
+            {{- if .Values.auditAnchorExporter.endpointUrl }}
+            - name: AGENTOPS_AUDIT_ANCHOR_S3_ENDPOINT_URL
+              value: {{ .Values.auditAnchorExporter.endpointUrl | quote }}
+            {{- end }}
+            {{- if .Values.auditAnchorExporter.expectedBucketOwner }}
+            - name: AGENTOPS_AUDIT_ANCHOR_S3_EXPECTED_BUCKET_OWNER
+              value: {{ .Values.auditAnchorExporter.expectedBucketOwner | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources.auditAnchorExporter | nindent 12 }}
+        - name: openbao-proxy
+          image: {{ include "agentops-guard.openbaoProxyImage" . | quote }}
+          imagePullPolicy: {{ .Values.openbaoProxy.image.pullPolicy }}
+          command:
+            - bao
+            - proxy
+            - -config=/etc/openbao-proxy/proxy.hcl
+            - -log-level=warn
+          {{- include "agentops-guard.containerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: openbao-proxy-config
+              mountPath: /etc/openbao-proxy
+              readOnly: true
+            - name: openbao-proxy-identity
+              mountPath: /var/run/secrets/agentops/openbao
+              readOnly: true
+            {{- if .Values.credentialStore.openbaoCaExistingSecret }}
+            - name: openbao-ca
+              mountPath: /var/run/secrets/agentops/openbao-ca
+              readOnly: true
+            {{- end }}
+            - name: openbao-proxy-temporary-files
+              mountPath: /tmp
+          ports:
+            - name: openbao-proxy
+              containerPort: {{ .Values.openbaoProxy.port }}
+          readinessProbe:
+            tcpSocket:
+              port: openbao-proxy
+          livenessProbe:
+            tcpSocket:
+              port: openbao-proxy
+          resources:
+            {{- toYaml .Values.openbaoProxy.resources | nindent 12 }}
+      volumes:
+        - name: temporary-files
+          emptyDir: {}
+        - name: openbao-proxy-config
+          configMap:
+            name: {{ include "agentops-guard.name" . }}-openbao-proxy-audit-exporter
+        - name: openbao-proxy-identity
+          secret:
+            secretName: {{ required "auditAnchorExporter.openbaoExistingSecret is required" .Values.auditAnchorExporter.openbaoExistingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.auditAnchorExporter.openbaoAppRoleRoleIdKey | quote }}
+                path: role-id
+              - key: {{ .Values.auditAnchorExporter.openbaoAppRoleSecretIdKey | quote }}
+                path: wrapped-secret-id
+        {{- if .Values.credentialStore.openbaoCaExistingSecret }}
+        - name: openbao-ca
+          secret:
+            secretName: {{ .Values.credentialStore.openbaoCaExistingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.credentialStore.openbaoCaKey | quote }}
+                path: ca.crt
+        {{- end }}
+        - name: openbao-proxy-temporary-files
+          emptyDir: {}
+{{- end }}

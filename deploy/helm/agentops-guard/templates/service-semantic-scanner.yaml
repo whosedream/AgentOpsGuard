@@ -1,0 +1,13 @@
+{{- if ne .Values.semanticScanner.mode "disabled" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentops-guard.name" . }}-semantic-scanner
+spec:
+  selector:
+    app: agentops-guard-semantic-scanner
+  ports:
+    - name: http
+      port: {{ .Values.service.semanticScannerPort }}
+      targetPort: {{ .Values.service.semanticScannerPort }}
+{{- end }}

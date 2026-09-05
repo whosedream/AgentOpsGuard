@@ -25,9 +25,10 @@ def standard_mcp_server(tmp_path: Path):
     server = tmp_path / "standard_mcp_server.py"
     server.write_text(
         f"""
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
+from mcp.types import Completion, PromptReference, ResourceTemplateReference
 
-mcp = FastMCP("transport-test", host="127.0.0.1", port={port})
+mcp = MCPServer("transport-test")
 
 @mcp.tool()
 def echo(text: str) -> str:
@@ -39,12 +40,31 @@ def status() -> str:
     \"\"\"Return server status.\"\"\"
     return "ready"
 
+@mcp.resource("demo://records/{{record_id}}")
+def record(record_id: str) -> str:
+    \"\"\"Return one record.\"\"\"
+    return f"record:{{record_id}}"
+
 @mcp.prompt()
 def greeting(name: str) -> str:
     \"\"\"Build a greeting prompt.\"\"\"
     return f"Hello, {{name}}"
 
-mcp.run("streamable-http")
+@mcp.completion()
+async def complete(ref, argument, context):
+    if isinstance(ref, PromptReference):
+        return Completion(values=["AgentOps"])
+    if isinstance(ref, ResourceTemplateReference):
+        return Completion(values=["record-1"])
+    return Completion(values=[])
+
+mcp.run(
+    transport="streamable-http",
+    host="127.0.0.1",
+    port={port},
+    stateless_http=True,
+    json_response=True,
+)
 """,
         encoding="utf-8",
     )
@@ -89,10 +109,30 @@ def test_streamable_http_transport_supports_standard_mcp_capabilities(
     resource = transport.read_resource("demo://status")
     assert resource["contents"][0]["text"] == "ready"
 
+    templates = transport.list_resource_templates()
+    assert templates[0]["uriTemplate"] == "demo://records/{record_id}"
+    templated_resource = transport.read_resource("demo://records/record-1")
+    assert templated_resource["contents"][0]["text"] == "record:record-1"
+
     prompts = transport.list_prompts()
     assert prompts[0]["name"] == "greeting"
     prompt = transport.get_prompt("greeting", {"name": "AgentOps"})
     assert prompt["messages"][0]["content"]["text"] == "Hello, AgentOps"
+
+    prompt_completion = transport.complete(
+        "prompt",
+        "greeting",
+        {"name": "name", "value": "Agent"},
+        {},
+    )
+    assert prompt_completion["completion"]["values"] == ["AgentOps"]
+    resource_completion = transport.complete(
+        "resource",
+        "demo://records/{record_id}",
+        {"name": "record_id", "value": "record"},
+        {},
+    )
+    assert resource_completion["completion"]["values"] == ["record-1"]
 
 
 def test_gateway_proxies_standard_mcp_without_bypassing_scanning(
@@ -119,7 +159,7 @@ def test_gateway_proxies_standard_mcp_without_bypassing_scanning(
     finally:
         db.close()
 
-    client = TestClient(app)
+    client = TestClient(app, headers={"X-AgentOps-Api-Key": "dev-agentops-key"})
     tools = client.get("/mcp/tools/list", params={"project_id": project_id})
     assert tools.status_code == 200
     assert tools.json()["tools"][0]["name"] == "echo"
@@ -146,6 +186,27 @@ def test_gateway_proxies_standard_mcp_without_bypassing_scanning(
     assert resource.json()["contents"][0]["text"] == "ready"
     assert resource.json()["risk"]["risk_labels"] == []
 
+    templates = client.get(
+        "/mcp/resources/templates/list",
+        params={"project_id": project_id},
+    )
+    assert templates.status_code == 200
+    assert templates.json()["resourceTemplates"][0]["uriTemplate"] == ("demo://records/{record_id}")
+    templated_resource = client.post(
+        "/mcp/resources/read",
+        params={"project_id": project_id},
+        json={"serverId": server_id, "uri": "demo://records/record-1"},
+    )
+    assert templated_resource.status_code == 200
+    assert templated_resource.json()["contents"][0]["text"] == "record:record-1"
+
+    unadvertised = client.post(
+        "/mcp/resources/read",
+        params={"project_id": project_id},
+        json={"serverId": server_id, "uri": "demo://not-advertised"},
+    )
+    assert unadvertised.status_code == 404
+
     prompts = client.get("/mcp/prompts/list", params={"project_id": project_id})
     assert prompts.status_code == 200
     assert prompts.json()["prompts"][0]["name"] == "greeting"
@@ -157,3 +218,20 @@ def test_gateway_proxies_standard_mcp_without_bypassing_scanning(
     assert prompt.status_code == 200
     assert prompt.json()["messages"][0]["content"]["text"] == "Hello, AgentOps"
     assert prompt.json()["risk"]["risk_labels"] == []
+
+    completion = client.post(
+        "/mcp/completion/complete",
+        params={"project_id": project_id},
+        json={
+            "serverId": server_id,
+            "refType": "prompt",
+            "refValue": "greeting",
+            "argument": {"name": "name", "value": "Agent"},
+        },
+    )
+    assert completion.status_code == 200
+    assert completion.json()["completion"] == {
+        "values": ["AgentOps"],
+        "total": 1,
+        "hasMore": False,
+    }

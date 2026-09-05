@@ -13,6 +13,7 @@ dist/
 build/
 .coverage
 artifacts/
+evals/holdouts/*.lock
 large_scale_test_report.txt
 large_scale_test_results.json
 .omc/

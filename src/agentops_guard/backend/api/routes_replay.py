@@ -7,7 +7,7 @@ from agentops_guard.backend.api.serializers import job_out, replay_out
 from agentops_guard.backend.database import get_db
 from agentops_guard.backend.models import ReplayRun
 from agentops_guard.backend.schemas import JobOut, PageOut, ReplayCreate, ReplayOut
-from agentops_guard.backend.services.jobs import QueueUnavailable, create_job, enqueue_job
+from agentops_guard.backend.services.jobs import create_job
 from agentops_guard.backend.services.projects import ensure_project
 from agentops_guard.backend.services.replay import create_replay
 
@@ -16,7 +16,15 @@ v1_router = APIRouter()
 
 
 @v1_router.get("/replays", response_model=list[ReplayOut] | PageOut)
-def list_replays(project_id: str = "default", source_run_id: str | None = None, limit: int = Query(default=50, le=200), cursor: str | None = None, page_mode: str | None = None, auth: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)) -> list[ReplayOut] | PageOut:
+def list_replays(
+    project_id: str = "default",
+    source_run_id: str | None = None,
+    limit: int = Query(default=50, le=200),
+    cursor: str | None = None,
+    page_mode: str | None = None,
+    auth: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> list[ReplayOut] | PageOut:
     authorize_project_access(auth, project_id, db=db)
     offset = int(cursor or 0)
     query = db.query(ReplayRun).filter(ReplayRun.project_id == project_id)
@@ -28,15 +36,12 @@ def list_replays(project_id: str = "default", source_run_id: str | None = None, 
 
 
 @v1_router.post("/replays/jobs", response_model=JobOut)
-def enqueue_replay(payload: ReplayCreate, request: Request, db: Session = Depends(get_db)) -> JobOut:
+def enqueue_replay(
+    payload: ReplayCreate, request: Request, db: Session = Depends(get_db)
+) -> JobOut:
     authorize_project_access(get_auth_context(request), payload.project_id, db=db)
     ensure_project(db, payload.project_id)
     row = create_job(db, payload.project_id, "replay", payload.model_dump())
-    try:
-        enqueue_job(db, row)
-    except QueueUnavailable as exc:
-        db.rollback()
-        raise HTTPException(503, f"Redis queue unavailable: {exc}") from exc
     db.commit()
     db.refresh(row)
     return job_out(row)

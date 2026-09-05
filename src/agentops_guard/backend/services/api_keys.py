@@ -18,12 +18,14 @@ def create_api_key(
     name: str,
     scopes: list[str],
     expires_at: datetime | None = None,
+    agent_id: str | None = None,
 ) -> tuple[ApiKey, str]:
     token = f"ag_{token_urlsafe(32)}"
     row = ApiKey(
         id=new_id("key"),
         project_id=project_id,
         name=name,
+        agent_id=agent_id,
         key_hash=hash_token(token),
         scopes=scopes,
         expires_at=expires_at,
@@ -56,4 +58,3 @@ def has_scope(row: ApiKey | None, required_scope: str | None) -> bool:
     scopes = set(row.scopes or [])
     prefix = required_scope.split(":", 1)[0]
     return "admin:*" in scopes or required_scope in scopes or f"{prefix}:*" in scopes
-

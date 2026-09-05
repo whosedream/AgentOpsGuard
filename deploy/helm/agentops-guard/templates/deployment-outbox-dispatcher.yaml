@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentops-guard-outbox-dispatcher
+spec:
+  replicas: {{ .Values.replicaCount.outboxDispatcher }}
+  selector:
+    matchLabels:
+      app: agentops-guard-outbox-dispatcher
+  template:
+    metadata:
+      labels:
+        app: agentops-guard-outbox-dispatcher
+    spec:
+      serviceAccountName: {{ required "serviceAccounts.outboxDispatcher is required" .Values.serviceAccounts.outboxDispatcher | quote }}
+      automountServiceAccountToken: false
+      {{- include "agentops-guard.podSecurityContext" . | nindent 6 }}
+      {{- if .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range .Values.image.pullSecrets }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: outbox-dispatcher
+          image: {{ include "agentops-guard.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["agentops-guard", "outbox-dispatcher", "--dispatcher-id", "helm-1"]
+          {{- include "agentops-guard.containerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: temporary-files
+              mountPath: /tmp
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentops-guard.name" . }}-config
+          env:
+            - name: AGENTOPS_COMPONENT
+              value: outbox_dispatcher
+            - name: AGENTOPS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "runtimeSecret.existingSecret is required" .Values.runtimeSecret.existingSecret | quote }}
+                  key: {{ .Values.runtimeSecret.databaseUrlKey | quote }}
+            - name: AGENTOPS_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtimeSecret.existingSecret | quote }}
+                  key: {{ .Values.runtimeSecret.redisUrlKey | quote }}
+            {{- if .Values.telemetry.enabled }}
+            - name: AGENTOPS_OTEL_ENABLED
+              value: "true"
+            - name: AGENTOPS_OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.telemetry.otlpEndpoint | quote }}
+            - name: AGENTOPS_OTEL_SERVICE_NAME
+              value: agentops-guard-outbox-dispatcher
+            - name: AGENTOPS_OTEL_TRACE_SAMPLE_RATIO
+              value: {{ .Values.telemetry.traceSampleRatio | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources.outboxDispatcher | nindent 12 }}
+      volumes:
+        - name: temporary-files
+          emptyDir: {}

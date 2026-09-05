@@ -8,8 +8,22 @@ from agentops_guard.backend.api.pagination import page
 from agentops_guard.backend.api.serializers import event_out
 from agentops_guard.backend.database import get_db
 from agentops_guard.backend.models import ContentObject, RiskEvent, Run, TraceEvent
-from agentops_guard.backend.schemas import ContentOut, EventsIn, PageOut, RunCreate, RunDag, RunOut, RunUpdate, TraceEventOut
-from agentops_guard.backend.services.content import new_id, persist_content
+from agentops_guard.backend.schemas import (
+    ContentOut,
+    EventsIn,
+    PageOut,
+    RunCreate,
+    RunDag,
+    RunOut,
+    RunUpdate,
+    TraceEventOut,
+)
+from agentops_guard.backend.services.content import (
+    new_id,
+    persist_content,
+    redact_text,
+    redact_value,
+)
 from agentops_guard.backend.services.policy import INTENT_MANIFEST_KEY, build_user_intent_manifest
 from agentops_guard.backend.services.projects import ensure_project, project_for_resource
 from agentops_guard.backend.services.trace import build_dag, run_to_schema
@@ -20,11 +34,14 @@ v1_router = APIRouter()
 
 @v1_router.post("/runs", response_model=RunOut)
 def create_run(payload: RunCreate, request: Request, db: Session = Depends(get_db)) -> RunOut:
-    authorize_project_access(get_auth_context(request), payload.project_id, db=db)
+    auth = get_auth_context(request)
+    authorize_project_access(auth, payload.project_id, db=db)
+    if auth.agent_id is not None and payload.agent_id not in {None, auth.agent_id}:
+        raise HTTPException(403, "Agent identity does not match authenticated credential")
     ensure_project(db, payload.project_id)
     input_ref = persist_content(db, payload.project_id, payload.input)
     metadata = {
-        **payload.metadata,
+        **redact_value(payload.metadata),
         INTENT_MANIFEST_KEY: build_user_intent_manifest(
             payload.input.text if payload.input is not None else None
         ),
@@ -32,10 +49,10 @@ def create_run(payload: RunCreate, request: Request, db: Session = Depends(get_d
     run = Run(
         id=new_id("run"),
         project_id=payload.project_id,
-        agent_id=payload.agent_id,
+        agent_id=auth.agent_id or payload.agent_id,
         trace_id=new_id("trace"),
-        name=payload.name,
-        user_id=payload.user_id,
+        name=redact_text(payload.name),
+        user_id=redact_text(payload.user_id),
         input_ref=input_ref,
         metadata_json=metadata,
     )
@@ -46,7 +63,9 @@ def create_run(payload: RunCreate, request: Request, db: Session = Depends(get_d
 
 
 @v1_router.patch("/runs/{run_id}", response_model=RunOut)
-def update_run(run_id: str, payload: RunUpdate, request: Request, db: Session = Depends(get_db)) -> RunOut:
+def update_run(
+    run_id: str, payload: RunUpdate, request: Request, db: Session = Depends(get_db)
+) -> RunOut:
     run = db.get(Run, run_id)
     if not run:
         raise HTTPException(404, "Run not found")
@@ -59,7 +78,7 @@ def update_run(run_id: str, payload: RunUpdate, request: Request, db: Session = 
         run.output_ref = persist_content(db, run.project_id, payload.output)
     if payload.risk is not None:
         run.risk_score = payload.risk.score
-        run.risk_labels = payload.risk.labels
+        run.risk_labels = redact_value(payload.risk.labels)
     if payload.total_cost_usd is not None:
         run.total_cost_usd = payload.total_cost_usd
     if payload.total_tokens is not None:
@@ -68,7 +87,10 @@ def update_run(run_id: str, payload: RunUpdate, request: Request, db: Session = 
         public_metadata = {
             key: value for key, value in payload.metadata.items() if key != INTENT_MANIFEST_KEY
         }
-        run.metadata_json = {**(run.metadata_json or {}), **public_metadata}
+        run.metadata_json = {
+            **(run.metadata_json or {}),
+            **redact_value(public_metadata),
+        }
     db.commit()
     db.refresh(run)
     return run_to_schema(run)
@@ -96,7 +118,11 @@ def list_runs(
     if risk_label:
         candidates = query.order_by(Run.created_at.desc()).all()
         risk_label_lower = risk_label.lower()
-        rows = [run for run in candidates if any(risk_label_lower in str(label).lower() for label in (run.risk_labels or []))][offset : offset + limit + 1]
+        rows = [
+            run
+            for run in candidates
+            if any(risk_label_lower in str(label).lower() for label in (run.risk_labels or []))
+        ][offset : offset + limit + 1]
     else:
         rows = query.order_by(Run.created_at.desc()).offset(offset).limit(limit + 1).all()
     has_more = len(rows) > limit
@@ -114,12 +140,19 @@ def get_run(run_id: str, request: Request, db: Session = Depends(get_db)) -> Run
 
 
 @v1_router.get("/runs/{run_id}/events", response_model=list[TraceEventOut])
-def get_run_events(run_id: str, request: Request, db: Session = Depends(get_db)) -> list[TraceEventOut]:
+def get_run_events(
+    run_id: str, request: Request, db: Session = Depends(get_db)
+) -> list[TraceEventOut]:
     run, project_id = project_for_resource(db, Run, run_id)
     if run is None:
         raise HTTPException(404, "Run not found")
     authorize_project_access(get_auth_context(request), str(project_id), conceal=True, db=db)
-    events = db.query(TraceEvent).filter(TraceEvent.run_id == run_id).order_by(TraceEvent.created_at.asc()).all()
+    events = (
+        db.query(TraceEvent)
+        .filter(TraceEvent.run_id == run_id)
+        .order_by(TraceEvent.created_at.asc())
+        .all()
+    )
     return [event_out(event) for event in events]
 
 
@@ -129,19 +162,26 @@ def get_run_dag(run_id: str, request: Request, db: Session = Depends(get_db)) ->
     if not run:
         raise HTTPException(404, "Run not found")
     authorize_project_access(get_auth_context(request), run.project_id, conceal=True, db=db)
-    events = db.query(TraceEvent).filter(TraceEvent.run_id == run_id).order_by(TraceEvent.created_at.asc()).all()
+    events = (
+        db.query(TraceEvent)
+        .filter(TraceEvent.run_id == run_id)
+        .order_by(TraceEvent.created_at.asc())
+        .all()
+    )
     return build_dag(run, events)
 
 
 @v1_router.post("/events", response_model=list[TraceEventOut])
-def create_events(payload: EventsIn, request: Request, db: Session = Depends(get_db)) -> list[TraceEventOut]:
+def create_events(
+    payload: EventsIn, request: Request, db: Session = Depends(get_db)
+) -> list[TraceEventOut]:
     records: list[TraceEvent] = []
     auth = get_auth_context(request)
     for event in payload.events:
         authorize_project_access(auth, event.project_id, db=db)
         run = db.get(Run, event.run_id)
         if not run:
-            raise HTTPException(404, f"Run not found: {event.run_id}")
+            raise HTTPException(404, "Run not found")
         authorize_project_access(auth, run.project_id, conceal=True, db=db)
         input_ref = event.input_ref or persist_content(db, event.project_id, event.input)
         output_ref = event.output_ref or persist_content(db, event.project_id, event.output)
@@ -154,19 +194,33 @@ def create_events(payload: EventsIn, request: Request, db: Session = Depends(get
             parent_span_id=event.parent_span_id,
             event_type=event.event_type,
             status=event.status,
-            actor=event.actor.model_dump(exclude_none=True),
+            actor=redact_value(event.actor.model_dump(exclude_none=True)),
             input_ref=input_ref,
             output_ref=output_ref,
-            metadata_json=event.metadata,
+            metadata_json=redact_value(event.metadata),
             risk_score=event.risk.score,
-            risk_labels=event.risk.labels,
+            risk_labels=redact_value(event.risk.labels),
             started_at=event.started_at,
             ended_at=event.ended_at,
         )
         db.add(record)
         records.append(record)
         if event.risk.labels:
-            db.add(RiskEvent(id=new_id("risk"), project_id=event.project_id, run_id=event.run_id, event_id=record.id, risk_type=event.risk.labels[0], severity="high" if event.risk.score >= 0.7 else "medium", score=event.risk.score, labels=event.risk.labels, evidence=[], description=f"Risk labels reported by event {record.id}."))
+            risk_labels = redact_value(event.risk.labels)
+            db.add(
+                RiskEvent(
+                    id=new_id("risk"),
+                    project_id=event.project_id,
+                    run_id=event.run_id,
+                    event_id=record.id,
+                    risk_type=risk_labels[0],
+                    severity="high" if event.risk.score >= 0.7 else "medium",
+                    score=event.risk.score,
+                    labels=risk_labels,
+                    evidence=[],
+                    description=f"Risk labels reported by event {record.id}.",
+                )
+            )
     db.commit()
     return [event_out(record) for record in records]
 
@@ -180,4 +234,10 @@ def get_content(content_id: str, request: Request, db: Session = Depends(get_db)
     authorize_project_access(auth, content.project_id, conceal=True, db=db)
     if auth.is_session_user and auth.active_role not in {"admin", "security_reviewer"}:
         raise HTTPException(403, "Raw content access denied")
-    return ContentOut(id=content.id, content_hash=content.content_hash, summary=content.summary, redacted_text=content.redacted_text, labels=content.labels or [])
+    return ContentOut(
+        id=content.id,
+        content_hash=content.content_hash,
+        summary=content.summary,
+        redacted_text=content.redacted_text,
+        labels=content.labels or [],
+    )

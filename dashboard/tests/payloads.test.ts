@@ -6,12 +6,14 @@ describe("SPEC-POLICY-001 payload helpers", () => {
   it("builds a policy payload from form fields", () => {
     expect(
       buildPolicyPayload({
+        projectId: "default",
         agentId: "coding-agent",
         toolName: "shell.execute",
         command: "rm -rf /",
         riskLabels: "credential_exfiltration, data_exfiltration",
       }),
     ).toEqual({
+      project_id: "default",
       actor: { agent_id: "coding-agent" },
       tool: { name: "shell.execute", command: "rm -rf /", args: { command: "rm -rf /" } },
       risk_labels: ["credential_exfiltration", "data_exfiltration"],
@@ -75,9 +77,9 @@ describe("SPEC-RUN-001 and SPEC-RISK-001 query builders", () => {
 
 describe("SPEC-RUN-002 event inspector helpers", () => {
   it("builds stable labels for event inspector and DAG nodes", () => {
-    expect(eventDisplayName({ event_type: "tool_call", status: "completed", metadata: { tool_name: "search.web" } })).toBe("search.web");
-    expect(eventDisplayName({ event_type: "model_call", status: "completed", metadata: { model: "gpt-test" } })).toBe("gpt-test");
-    expect(eventDisplayName({ event_type: "state_change", status: "completed", metadata: {} })).toBe("state_change");
+    expect(eventDisplayName({ event_type: "tool_call", metadata: { tool_name: "search.web" } })).toBe("search.web");
+    expect(eventDisplayName({ event_type: "model_call", metadata: { model: "gpt-test" } })).toBe("gpt-test");
+    expect(eventDisplayName({ event_type: "state_change", metadata: {} })).toBe("state_change");
   });
 });
 

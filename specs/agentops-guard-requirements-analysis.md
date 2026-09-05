@@ -37,10 +37,12 @@ AgentOps Guard 是一个自托管 Agent 运行治理平台，面向 MCP 与 Pyth
 
 Gateway 位于 `src/agentops_guard/gateway/app.py`：
 
-- 提供 MCP 风格端点：`/tools/list`, `/tools/call`, `/resources/list`, `/resources/read`, `/prompts/list`, `/prompts/get`。
+- 提供 MCP 风格端点：`/tools/list`, `/tools/call`, `/resources/list`,
+  `/resources/templates/list`, `/resources/read`, `/prompts/list`, `/prompts/get`,
+  `/completion/complete`。
 - 从数据库读取 MCP server registry。
 - 对工具描述、工具参数、工具输出、resource/prompt 内容执行扫描与策略检查。
-- 支持标准 MCP `streamable_http` 初始化、工具、资源和提示能力；旧自定义 HTTP 接口仅以
+- 支持标准 MCP `streamable_http` 初始化、工具、固定资源、资源模板、提示和受限补全能力；旧自定义 HTTP 接口仅以
   `legacy_http` 兼容模式保留。`stdio` 当前仍使用既有进程管理实现。
 
 ### 2.3 Python SDK 与 CLI
@@ -79,7 +81,8 @@ Dashboard 位于 `dashboard`，采用 Next.js：
 - Alembic migration 当前是 placeholder，生产 schema 生命周期不足。
 - `routes.py` 聚合过多职责，后续维护成本会快速上升。
 - 鉴权停留在单 API Key，缺少组织/项目/角色/密钥轮换。
-- MCP `stdio` 尚未真实进程管理，网关可用性与隔离不足。
+- MCP `stdio` 已有真实进程复用、硬超时、响应大小限制、固定错误和网关退出清理；更强的子进程树
+  隔离仍应交给 ToolHive 或目标平台的容器运行时。
 - 缺少异步任务队列，Replay/Eval/扫描在规模化后会阻塞请求路径。
 - 缺少 OpenTelemetry、结构化日志、指标、审计日志与告警。
 - Dashboard 以功能验证为主，缺少权限、分页、错误恢复、实时刷新等生产体验。

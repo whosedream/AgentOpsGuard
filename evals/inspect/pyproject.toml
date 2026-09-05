@@ -1,0 +1,15 @@
+[project]
+name = "agentops-guard-inspect-eval"
+version = "0.1.0"
+description = "Isolated Inspect AI environment for AgentOps Guard system evaluations."
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "agentdojo==0.1.35",
+  "inspect-ai==0.3.262",
+  "inspect-evals==0.16.0",
+  "mcp==2.1.1",
+  "openai==3.5.0",
+]
+
+[tool.uv]
+package = false

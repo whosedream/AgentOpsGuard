@@ -1,4 +1,15 @@
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from agentops_guard.backend.database import Base, utcnow
@@ -29,7 +40,9 @@ class Membership(Base):
     __tablename__ = "memberships"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    organization_id: Mapped[str] = mapped_column(String(64), ForeignKey("organizations.id"), index=True)
+    organization_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), index=True)
     role: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
@@ -42,7 +55,9 @@ class Session(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True, default="")
     user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), index=True)
-    organization_id: Mapped[str] = mapped_column(String(64), ForeignKey("organizations.id"), index=True)
+    organization_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id"), index=True
+    )
     membership_id: Mapped[str] = mapped_column(String(64), ForeignKey("memberships.id"), index=True)
     provider: Mapped[str] = mapped_column(String(64), default="dev_stub")
     expires_at: Mapped[object] = mapped_column(DateTime(timezone=True), index=True)
@@ -55,7 +70,9 @@ class Project(Base):
     __tablename__ = "projects"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    organization_id: Mapped[str] = mapped_column(String(64), ForeignKey("organizations.id"), index=True, default="")
+    organization_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id"), index=True, default=""
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     store_raw_content: Mapped[bool] = mapped_column(Boolean, default=False)
     retention_days: Mapped[int] = mapped_column(Integer, default=30)
@@ -154,6 +171,9 @@ class PolicyDecision(Base):
     matched_policy: Mapped[str | None] = mapped_column(String(255))
     remediation: Mapped[str | None] = mapped_column(Text)
     context: Mapped[dict] = mapped_column(JSON, default=dict)
+    builtin_policy_version: Mapped[str] = mapped_column(String(64), default="legacy")
+    policy_pack_revisions: Mapped[list] = mapped_column(JSON, default=list)
+    opa_bundle_revision: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -165,6 +185,7 @@ class ApprovalRequest(Base):
     run_id: Mapped[str | None] = mapped_column(String(64), index=True)
     event_id: Mapped[str | None] = mapped_column(String(64), index=True)
     decision_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    execution_request_id: Mapped[str | None] = mapped_column(String(64), index=True)
     action: Mapped[str] = mapped_column(String(64), default="require_approval")
     requester: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
@@ -177,6 +198,50 @@ class ApprovalRequest(Base):
     resolved_reason: Mapped[str | None] = mapped_column(Text)
     expires_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
     resolved_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ExecutionRequest(Base):
+    __tablename__ = "execution_requests"
+    __table_args__ = (
+        UniqueConstraint("approval_id", name="uq_execution_request_approval"),
+        UniqueConstraint(
+            "project_id",
+            "idempotency_key",
+            name="uq_execution_request_idempotency",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), index=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    decision_id: Mapped[str] = mapped_column(String(64), index=True)
+    approval_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject: Mapped[dict] = mapped_column(JSON, default=dict)
+    actor_digest: Mapped[str] = mapped_column(String(64), index=True)
+    server_id: Mapped[str] = mapped_column(String(64), index=True)
+    tool_name: Mapped[str] = mapped_column(String(255), index=True)
+    tool_revision_id: Mapped[str] = mapped_column(String(64), index=True)
+    tool_revision_digest: Mapped[str] = mapped_column(String(64))
+    arguments_digest: Mapped[str] = mapped_column(String(64), index=True)
+    intent_ref: Mapped[str | None] = mapped_column(String(64))
+    policy_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    policy_snapshot_digest: Mapped[str] = mapped_column(String(64))
+    risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    risk_labels: Mapped[list] = mapped_column(JSON, default=list)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32), default="waiting_approval", index=True)
+    claimed_by: Mapped[str | None] = mapped_column(String(128))
+    approved_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    claimed_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), index=True)
+    completed_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[object] = mapped_column(DateTime(timezone=True), index=True)
+    result_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    reconciliation_resolution: Mapped[str | None] = mapped_column(String(32))
+    reconciliation_evidence_sha256: Mapped[str | None] = mapped_column(String(64))
+    reconciled_by: Mapped[str | None] = mapped_column(String(128))
+    reconciled_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -243,6 +308,7 @@ class ApiKey(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(64), index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    agent_id: Mapped[str | None] = mapped_column(String(128), index=True)
     key_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
     scopes: Mapped[list] = mapped_column(JSON, default=list)
     expires_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
@@ -255,9 +321,7 @@ class ServiceCredential(Base):
     __tablename__ = "service_credentials"
 
     credential_ref: Mapped[str] = mapped_column(String(64), primary_key=True)
-    project_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("projects.id"), index=True
-    )
+    project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.id"), index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
     binding_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
@@ -288,6 +352,35 @@ class AuditLog(Base):
     before: Mapped[dict | None] = mapped_column(JSON)
     after: Mapped[dict | None] = mapped_column(JSON)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    previous_hash: Mapped[str | None] = mapped_column(String(64))
+    entry_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuditChainHead(Base):
+    __tablename__ = "audit_chain_heads"
+
+    project_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    entry_hash: Mapped[str] = mapped_column(String(64))
+    entry_id: Mapped[str] = mapped_column(String(64))
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuditCheckpoint(Base):
+    __tablename__ = "audit_checkpoints"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), index=True)
+    entry_id: Mapped[str] = mapped_column(String(64), index=True)
+    entry_hash: Mapped[str] = mapped_column(String(64), index=True)
+    checked_entries: Mapped[int] = mapped_column(Integer)
+    payload_digest: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    signer: Mapped[str] = mapped_column(String(64))
+    key_name: Mapped[str] = mapped_column(String(255))
+    key_version: Mapped[int] = mapped_column(Integer)
+    signature: Mapped[str] = mapped_column(Text)
+    public_key: Mapped[str] = mapped_column("public_key_pem", Text)
+    issued_at: Mapped[object] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -321,6 +414,29 @@ class McpTool(Base):
     risk_score: Mapped[float] = mapped_column(Float, default=0.0)
     risk_labels: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    current_revision_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class McpToolRevision(Base):
+    __tablename__ = "mcp_tool_revisions"
+    __table_args__ = (
+        UniqueConstraint("tool_id", "content_digest", name="uq_mcp_tool_revision_digest"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), index=True)
+    tool_id: Mapped[str] = mapped_column(String(128), index=True)
+    server_id: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    content_digest: Mapped[str] = mapped_column(String(64), index=True)
+    source_digest: Mapped[str] = mapped_column(String(64))
+    server_digest: Mapped[str] = mapped_column(String(64))
+    descriptor: Mapped[dict] = mapped_column(JSON, default=dict)
+    risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    risk_labels: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    scanner_version: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -375,8 +491,27 @@ class BackgroundJob(Base):
     error: Mapped[str | None] = mapped_column(Text)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     run_after: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    lease_owner: Mapped[str | None] = mapped_column(String(128), index=True)
+    lease_expires_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), index=True)
     started_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class OutboxEvent(Base):
+    __tablename__ = "outbox_events"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), index=True)
+    topic: Mapped[str] = mapped_column(String(128), index=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[object] = mapped_column(DateTime(timezone=True), index=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), index=True)
+    lease_expires_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), index=True)
+    delivered_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

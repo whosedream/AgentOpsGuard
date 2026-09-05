@@ -135,7 +135,7 @@ export function GovernancePanel() {
   async function reviewApproval(id: string, statusValue: "approved" | "denied") {
     setSaving(true);
     try {
-      await apiPost(`/v1/approvals/${id}/review`, { status: statusValue, resolved_by: "dashboard" });
+      await apiPost(`/v1/approvals/${id}/review`, { status: statusValue });
       await load(projectId);
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Approval review failed");

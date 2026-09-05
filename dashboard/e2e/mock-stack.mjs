@@ -76,9 +76,9 @@ const evalRun = {
 
 const roleCapabilities = {
   read_only: ["projects:read", "runs:read", "replays:read", "evals:read", "mcp:read", "jobs:read"],
-  developer: ["projects:read", "runs:read", "runs:write", "replays:read", "replays:write", "evals:read", "evals:write", "policies:read", "scanner:read", "mcp:read", "jobs:read"],
+  developer: ["projects:read", "runs:read", "runs:write", "replays:read", "replays:write", "evals:read", "evals:write", "policies:read", "scanner:read", "mcp:read", "mcp:invoke", "jobs:read"],
   security_reviewer: ["projects:read", "control:read", "approvals:read", "approvals:write", "audit:read", "runs:read", "replays:read", "evals:read", "raw_content:read", "policies:read", "scanner:read", "jobs:read"],
-  admin: ["organizations:write", "projects:read", "projects:write", "control:read", "control:admin", "mcp:read", "mcp:admin", "runs:read", "runs:write", "replays:read", "replays:write", "evals:read", "evals:write", "approvals:read", "approvals:write", "audit:read", "raw_content:read", "api_keys:write", "policies:read", "policies:admin", "scanner:read", "scanner:admin", "jobs:read", "runs:admin"],
+  admin: ["organizations:write", "projects:read", "projects:write", "control:read", "control:admin", "mcp:read", "mcp:invoke", "mcp:admin", "runs:read", "runs:write", "replays:read", "replays:write", "evals:read", "evals:write", "approvals:read", "approvals:write", "audit:read", "raw_content:read", "api_keys:write", "policies:read", "policies:admin", "scanner:read", "scanner:admin", "jobs:read", "jobs:admin", "runs:admin"],
 };
 
 function envelope(items) {
@@ -179,6 +179,12 @@ function startBackend() {
     if (url.pathname === "/v1/eval-suites") return json(res, 200, req.method === "POST" ? suite : [suite]);
     if (url.pathname === "/v1/eval-suites/suite_1/jobs") return json(res, 200, job("job_eval", "eval_run", { eval_run_id: "eval_1", status: "completed", passed: true }));
     if (url.pathname === "/v1/eval-runs") return json(res, 200, url.searchParams.get("page_mode") === "envelope" ? envelope([evalRun]) : [evalRun]);
+    if (url.pathname === "/v1/jobs/reconciliation") return json(res, 200, { project_id: "default", stale_pending_jobs: 0, expired_running_jobs: 0, dead_jobs: 1, undelivered_outbox_events: 0, outcome_unknown_executions: 0, checked_at: now() });
+    if (url.pathname === "/v1/jobs") {
+      const failedJob = { ...job("job_dead", "eval_run", null), status: "dead", error: "job_execution_failed", attempts: 3 };
+      return json(res, 200, url.searchParams.get("page_mode") === "envelope" ? envelope([failedJob]) : [failedJob]);
+    }
+    if (req.method === "POST" && url.pathname === "/v1/jobs/job_dead/retry") return json(res, 200, job("job_retry", "eval_run", null));
     if (url.pathname === "/v1/jobs/job_eval") return json(res, 200, job("job_eval", "eval_run", { eval_run_id: "eval_1", status: "completed", passed: true }));
     if (url.pathname === "/v1/jobs/job_replay") return json(res, 200, job("job_replay", "replay", { replay_id: "replay_1", status: "completed" }));
     if (url.pathname === "/v1/jobs/job_mcp") return json(res, 200, job("job_mcp", "mcp_refresh", { server_id: "local_files", status: "completed", tools: 1 }));

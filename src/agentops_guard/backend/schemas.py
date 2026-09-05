@@ -181,6 +181,9 @@ class PolicyDecisionOut(BaseModel):
     matched_policy: str | None = None
     remediation: str | None = None
     context: dict[str, Any] = Field(default_factory=dict)
+    builtin_policy_version: str | None = None
+    policy_pack_revisions: list[dict[str, str]] = Field(default_factory=list)
+    opa_bundle_revision: str | None = None
 
 
 class ScanRequest(BaseModel):
@@ -246,6 +249,7 @@ class MembershipCreate(BaseModel):
     email: str
     display_name: str
     role: RoleType
+    oidc_subject: str | None = Field(default=None, min_length=1, max_length=220)
 
 
 class MembershipUpdate(BaseModel):
@@ -326,8 +330,7 @@ class ApprovalRequestCreate(BaseModel):
 
 
 class ApprovalReview(BaseModel):
-    status: Literal["approved", "denied", "expired", "cancelled"]
-    resolved_by: str | None = None
+    status: Literal["approved", "denied"]
     resolved_reason: str | None = None
 
 
@@ -337,6 +340,7 @@ class ApprovalRequestOut(BaseModel):
     run_id: str | None
     event_id: str | None
     decision_id: str | None
+    execution_request_id: str | None = None
     action: str
     requester: dict[str, Any]
     status: str
@@ -531,13 +535,9 @@ class McpServerConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_runtime_provider(self) -> "McpServerConfig":
         if self.runtime_provider == "toolhive" and (
-            self.transport != "streamable_http"
-            or not self.url
-            or self.trust_level != "sandboxed"
+            self.transport != "streamable_http" or not self.url or self.trust_level != "sandboxed"
         ):
-            raise ValueError(
-                "ToolHive servers require streamable_http, a URL, and sandboxed trust"
-            )
+            raise ValueError("ToolHive servers require streamable_http, a URL, and sandboxed trust")
         return self
 
 
@@ -558,6 +558,7 @@ class McpToolOut(BaseModel):
     risk_score: float
     risk_labels: list[str]
     status: str
+    current_revision_id: str | None = None
     created_at: datetime
 
 
@@ -586,6 +587,7 @@ class PageOut(BaseModel):
 class ApiKeyCreate(BaseModel):
     project_id: str = "default"
     name: str
+    agent_id: str | None = Field(default=None, min_length=1, max_length=128)
     scopes: list[str] = Field(default_factory=lambda: ["admin:*"])
     expires_at: datetime | None = None
 
@@ -594,6 +596,7 @@ class ApiKeyOut(BaseModel):
     id: str
     project_id: str
     name: str
+    agent_id: str | None = None
     scopes: list[str]
     expires_at: datetime | None = None
     last_used_at: datetime | None = None
@@ -657,7 +660,39 @@ class AuditLogOut(BaseModel):
     before: dict[str, Any] | None = None
     after: dict[str, Any] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    previous_hash: str | None = None
+    entry_hash: str | None = None
     created_at: datetime
+
+
+class AuditIntegrityOut(BaseModel):
+    valid: bool
+    checked_entries: int
+    broken_entry_id: str | None = None
+
+
+class AuditCheckpointOut(BaseModel):
+    id: str
+    project_id: str
+    entry_id: str
+    entry_hash: str
+    checked_entries: int
+    payload_digest: str
+    signer: str
+    key_name: str
+    key_version: int
+    signature: str
+    public_key: str
+    issued_at: datetime
+    payload: dict[str, Any]
+
+
+class AuditCheckpointIntegrityOut(BaseModel):
+    valid: bool
+    signature_valid: bool
+    chain_prefix_valid: bool
+    key_origin_valid: bool | None = None
+    reason: str | None = None
 
 
 class MembershipSummaryOut(BaseModel):
@@ -699,6 +734,59 @@ class JobOut(BaseModel):
     run_after: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    created_at: datetime
+
+
+class JobReconciliationOut(BaseModel):
+    project_id: str
+    stale_pending_jobs: int
+    expired_running_jobs: int
+    dead_jobs: int
+    undelivered_outbox_events: int
+    outcome_unknown_executions: int
+    checked_at: datetime
+
+
+class ExecutionOutcomeResolution(BaseModel):
+    resolution: Literal[
+        "confirmed_succeeded",
+        "confirmed_failed",
+        "confirmed_not_executed",
+    ]
+    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ExecutionOutcomeResolutionOut(BaseModel):
+    id: str
+    project_id: str
+    status: str
+    resolution: str
+    evidence_sha256: str
+    reconciled_by: str
+    reconciled_at: datetime
+
+
+class ExecutionRequestOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    project_id: str
+    run_id: str | None
+    approval_id: str
+    server_id: str
+    tool_name: str
+    tool_revision_id: str
+    arguments_digest: str
+    policy_snapshot_digest: str
+    status: str
+    risk_score: float
+    risk_labels: list[str]
+    expires_at: datetime
+    completed_at: datetime | None
+    reconciliation_resolution: str | None
+    reconciliation_evidence_sha256: str | None
+    reconciled_by: str | None
+    reconciled_at: datetime | None
     created_at: datetime
 
 

@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/meta-llama/llama-cookbook.git",
+  "commit": "2f22a9eb030f92d0e99227e57e9a1123af1f9532",
+  "license": "MIT",
+  "license_sha256": "47d22e84f5cc964465173b1e803686bc3557762c0126ff65d788d7386f55b44e",
+  "reference_file": "getting-started/responsible_ai/prompt_guard/inference.py",
+  "reference_file_sha256": "29afa64415b07811c22b3c2e27330ee40f9e8edff0a7faf4940b8cfc1c74d424",
+  "reused_design": "tokenize full text, split into bounded token chunks, batch inference, take maximum risk score"
+}

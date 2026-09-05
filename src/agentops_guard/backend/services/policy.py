@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from agentops_guard.backend.config import get_settings
 from agentops_guard.backend.models import ApprovalRequest, PolicyDecision, PolicyPack, Run
 from agentops_guard.backend.schemas import PolicyContext, PolicyDecisionOut
-from agentops_guard.backend.services.content import new_id
+from agentops_guard.backend.services.content import new_id, redact_value
 from agentops_guard.backend.services.opa import OpaUnavailable, evaluate_opa
 
 HIGH_RISK_TOOLS = {
@@ -57,6 +57,7 @@ ACTION_PRIORITY = {
     "quarantine": 5,
     "deny": 6,
 }
+BUILTIN_POLICY_VERSION = "2026-09-05.1"
 
 USER_ACTION_TERMS = {
     "write": (
@@ -68,6 +69,11 @@ USER_ACTION_TERMS = {
         "set",
         "add",
         "change",
+        "categorize",
+        "classify",
+        "draft",
+        "resolve",
+        "close",
         "写入",
         "更新",
         "创建",
@@ -76,6 +82,11 @@ USER_ACTION_TERMS = {
         "设置",
         "新增",
         "更改",
+        "分类",
+        "归类",
+        "起草",
+        "解决",
+        "关闭",
     ),
     "send": (
         "send",
@@ -142,6 +153,16 @@ TOOL_ACTION_TERMS = {
         "put",
         "rename",
         "move",
+        "categorize",
+        "classify",
+        "draft",
+        "resolve",
+        "close",
+        "分类",
+        "归类",
+        "起草",
+        "解决",
+        "关闭",
     },
 }
 
@@ -165,6 +186,9 @@ TARGET_ARGUMENT_KEYS = {
     "url",
     "user_id",
     "webhook",
+}
+TARGET_ARGUMENT_SCOPES = {
+    "email_index": "email",
 }
 
 INTENT_TARGET_PATTERN = re.compile(
@@ -201,11 +225,24 @@ def build_user_intent_manifest(text: str | None) -> dict[str, Any]:
             for match in INTENT_TARGET_PATTERN.finditer(normalized)
         }
     )
+    target_scopes: list[str] = []
+    if (
+        any(
+            _contains_action_term(normalized, term)
+            for term in ("categorize", "classify", "分类", "归类")
+        )
+        and any(
+            _contains_action_term(normalized, term)
+            for term in ("email", "emails", "message", "messages", "邮件")
+        )
+    ):
+        target_scopes.append("email")
     return {
         "version": 1,
         "present": bool(normalized),
         "actions": actions,
         "target_hashes": target_hashes,
+        "target_scopes": target_scopes,
     }
 
 
@@ -226,13 +263,18 @@ def _tool_actions(
     return sorted(actions)
 
 
-def _target_argument_values(arguments: dict[str, Any]) -> tuple[list[str], list[str]]:
+def _target_argument_values(
+    arguments: dict[str, Any],
+) -> tuple[list[str], list[tuple[str, str | None]]]:
     fields: set[str] = set()
-    values: list[str] = []
+    values: list[tuple[str, str | None]] = []
 
     def visit(value: Any, key: str | None = None) -> None:
         normalized_key = re.sub(r"(?<!^)(?=[A-Z])", "_", key or "").replace("-", "_").casefold()
-        is_target = normalized_key in TARGET_ARGUMENT_KEYS or normalized_key.endswith(
+        is_target = (
+            normalized_key in TARGET_ARGUMENT_KEYS
+            or normalized_key in TARGET_ARGUMENT_SCOPES
+            or normalized_key.endswith(
             (
                 "_account",
                 "_channel",
@@ -249,6 +291,7 @@ def _target_argument_values(arguments: dict[str, Any]) -> tuple[list[str], list[
                 "_webhook",
             )
         )
+        )
         if isinstance(value, dict):
             for child_key, child_value in value.items():
                 visit(child_value, str(child_key))
@@ -257,7 +300,7 @@ def _target_argument_values(arguments: dict[str, Any]) -> tuple[list[str], list[
                 visit(item, key)
         elif is_target and isinstance(value, str | int | float):
             fields.add(normalized_key)
-            values.append(str(value))
+            values.append((str(value), TARGET_ARGUMENT_SCOPES.get(normalized_key)))
 
     visit(arguments)
     return sorted(fields), values
@@ -274,10 +317,15 @@ def assess_tool_action_alignment(
     target_fields, target_values = _target_argument_values(arguments)
     manifest = intent_manifest or {}
     known_target_hashes = set(manifest.get("target_hashes") or [])
+    known_target_scopes = set(manifest.get("target_scopes") or [])
     action_aligned = not actions or set(actions).issubset(set(manifest.get("actions") or []))
     target_aligned = (not arguments and not target_values) or (
         bool(target_values)
-        and all(_intent_value_hash(value) in known_target_hashes for value in target_values)
+        and all(
+            _intent_value_hash(value) in known_target_hashes
+            or (scope is not None and scope in known_target_scopes)
+            for value, scope in target_values
+        )
     )
     required = bool(actions)
     return {
@@ -290,11 +338,18 @@ def assess_tool_action_alignment(
         "aligned": not required
         or (bool(manifest.get("present")) and action_aligned and target_aligned),
         "target_fields": target_fields,
+        "target_scopes": sorted(
+            {scope for _, scope in target_values if scope is not None}
+        ),
     }
 
 
 def _tool_name(context: PolicyContext) -> str:
     return str(context.tool.get("name") or context.tool.get("id") or "")
+
+
+def _redacted_context(context: PolicyContext) -> dict[str, Any]:
+    return redact_value(context.model_dump())
 
 
 def evaluate_policy(context: PolicyContext, db: Session | None = None) -> PolicyDecisionOut:
@@ -319,7 +374,11 @@ def evaluate_policy(context: PolicyContext, db: Session | None = None) -> Policy
         span.set_attribute("agentops.policy.action", decision.action)
         span.set_attribute(
             "agentops.risk.level",
-            "high" if context.risk_score >= 0.7 else "medium" if context.risk_score >= 0.4 else "low",
+            "high"
+            if context.risk_score >= 0.7
+            else "medium"
+            if context.risk_score >= 0.4
+            else "low",
         )
         return decision
 
@@ -334,17 +393,17 @@ def evaluate_builtin_policy(context: PolicyContext) -> PolicyDecisionOut:
 def _evaluate_hard_boundary(context: PolicyContext) -> PolicyDecisionOut | None:
     command = str(context.tool.get("command") or context.tool.get("args", {}).get("command", ""))
     labels = set(context.risk_labels) | set(context.data.get("labels", []))
-    actor = context.actor.get("agent_id") or context.actor.get("role")
+    actor = context.actor.get("agent_id")
     allowed_agents = context.tool.get("allowed_agents") or []
 
-    if allowed_agents and actor and actor not in allowed_agents:
+    if allowed_agents and actor not in allowed_agents:
         return PolicyDecisionOut(
             action="deny",
             reason_code="tool_not_allowed_for_agent",
             severity="high",
             matched_policy="tool_access",
             remediation="Bind this tool to the agent explicitly or route through a lower-risk tool.",
-            context=context.model_dump(),
+            context=_redacted_context(context),
         )
 
     if context.tool.get("status") == "quarantined":
@@ -354,7 +413,7 @@ def _evaluate_hard_boundary(context: PolicyContext) -> PolicyDecisionOut | None:
             severity="critical",
             matched_policy="mcp_trust",
             remediation="Review the MCP tool metadata and remove malicious instructions before enabling it.",
-            context=context.model_dump(),
+            context=_redacted_context(context),
         )
 
     if labels & EXFILTRATION_LABELS:
@@ -364,7 +423,7 @@ def _evaluate_hard_boundary(context: PolicyContext) -> PolicyDecisionOut | None:
             severity="critical",
             matched_policy="data_boundary",
             remediation="Redact sensitive data and avoid sending it to external tools or URLs.",
-            context=context.model_dump(),
+            context=_redacted_context(context),
         )
 
     if any(fragment.lower() in command.lower() for fragment in DANGEROUS_COMMAND_FRAGMENTS):
@@ -374,14 +433,25 @@ def _evaluate_hard_boundary(context: PolicyContext) -> PolicyDecisionOut | None:
             severity="critical",
             matched_policy="dangerous_command",
             remediation="Replace the command with a scoped, reversible operation.",
-            context=context.model_dump(),
+            context=_redacted_context(context),
         )
 
     alignment = context.data.get("action_alignment") or {}
+    if alignment.get("required") and context.data.get("untrusted_content_risk"):
+        return PolicyDecisionOut(
+            action="require_approval",
+            reason_code="untrusted_content_influenced_mutation",
+            severity="high",
+            matched_policy="content_data_flow",
+            remediation="Review the mutation because it follows risky external content.",
+            context=_redacted_context(context),
+        )
     if alignment.get("required") and not alignment.get("aligned"):
         if "external_unknown" in (alignment.get("actions") or []):
             reason_code = "unreviewed_external_tool"
-            remediation = "Review the external tool and mark its server internal before automatic execution."
+            remediation = (
+                "Review the external tool and mark its server internal before automatic execution."
+            )
         elif not alignment.get("intent_present"):
             reason_code = "trusted_user_intent_required"
             remediation = "Bind the tool call to a run containing the original user request."
@@ -397,7 +467,7 @@ def _evaluate_hard_boundary(context: PolicyContext) -> PolicyDecisionOut | None:
             severity="high",
             matched_policy="tool_action_alignment",
             remediation=remediation,
-            context=context.model_dump(),
+            context=_redacted_context(context),
         )
 
     return None
@@ -413,7 +483,7 @@ def _evaluate_builtin_soft_policy(context: PolicyContext) -> PolicyDecisionOut:
             severity="high",
             matched_policy="approval",
             remediation="Require human approval before executing this high-risk action.",
-            context=context.model_dump(),
+            context=_redacted_context(context),
         )
 
     if context.risk_score >= 0.4:
@@ -423,7 +493,7 @@ def _evaluate_builtin_soft_policy(context: PolicyContext) -> PolicyDecisionOut:
             severity="medium",
             matched_policy="data_boundary",
             remediation="Return sanitized content to the agent context.",
-            context=context.model_dump(),
+            context=_redacted_context(context),
         )
 
     return PolicyDecisionOut(
@@ -432,26 +502,42 @@ def _evaluate_builtin_soft_policy(context: PolicyContext) -> PolicyDecisionOut:
         severity="low",
         matched_policy="default_allow",
         remediation=None,
-        context=context.model_dump(),
+        context=_redacted_context(context),
     )
 
 
-def persist_policy_decision(db: Session, decision: PolicyDecisionOut, context: PolicyContext) -> PolicyDecisionOut:
+def persist_policy_decision(
+    db: Session, decision: PolicyDecisionOut, context: PolicyContext
+) -> PolicyDecisionOut:
+    safe_decision = PolicyDecisionOut.model_validate(redact_value(decision.model_dump()))
+    snapshot = build_policy_snapshot(db, safe_decision, context)
+    policy_pack_revisions = snapshot["policy_pack_revisions"]
+    opa_bundle_revision = snapshot["opa_bundle_revision"]
     record = PolicyDecision(
         id=new_id("policy"),
         project_id=context.project_id,
         run_id=context.run_id,
         event_id=context.event_id,
-        action=decision.action,
-        reason_code=decision.reason_code,
-        severity=decision.severity,
-        matched_policy=decision.matched_policy,
-        remediation=decision.remediation,
-        context=decision.context,
+        action=safe_decision.action,
+        reason_code=safe_decision.reason_code,
+        severity=safe_decision.severity,
+        matched_policy=safe_decision.matched_policy,
+        remediation=safe_decision.remediation,
+        context=safe_decision.context,
+        builtin_policy_version=BUILTIN_POLICY_VERSION,
+        policy_pack_revisions=policy_pack_revisions,
+        opa_bundle_revision=opa_bundle_revision,
     )
     db.add(record)
     db.flush()
-    persisted = decision.model_copy(update={"id": record.id})
+    persisted = safe_decision.model_copy(
+        update={
+            "id": record.id,
+            "builtin_policy_version": BUILTIN_POLICY_VERSION,
+            "policy_pack_revisions": policy_pack_revisions,
+            "opa_bundle_revision": opa_bundle_revision,
+        }
+    )
     if persisted.action == "require_approval":
         existing = (
             db.query(ApprovalRequest)
@@ -471,22 +557,48 @@ def persist_policy_decision(db: Session, decision: PolicyDecisionOut, context: P
                 event_id=context.event_id,
                 decision_id=record.id,
                 action=persisted.action,
-                requester=context.actor or {},
+                requester=redact_value(context.actor or {}),
                 status="pending",
                 reason_code=persisted.reason_code,
                 severity=persisted.severity,
                 risk_score=context.risk_score,
-                risk_labels=context.risk_labels,
-                context=context.model_dump(),
+                risk_labels=redact_value(context.risk_labels),
+                context=_redacted_context(context),
             )
             db.add(approval)
             if context.run_id:
                 run = db.get(Run, context.run_id)
                 if run and run.status == "running":
                     run.status = "awaiting_approval"
-                    run.metadata_json = {**(run.metadata_json or {}), "approval_request_id": approval.id}
+                    run.metadata_json = {
+                        **(run.metadata_json or {}),
+                        "approval_request_id": approval.id,
+                    }
             db.flush()
     return persisted
+
+
+def build_policy_snapshot(
+    db: Session,
+    decision: PolicyDecisionOut,
+    context: PolicyContext,
+) -> dict[str, Any]:
+    return {
+        "builtin_policy_version": BUILTIN_POLICY_VERSION,
+        "policy_pack_revisions": [
+            {"id": pack.id, "family_id": pack.family_id, "version": pack.version}
+            for pack in (
+                db.query(PolicyPack)
+                .filter(
+                    PolicyPack.project_id == context.project_id,
+                    PolicyPack.status == "active",
+                )
+                .order_by(PolicyPack.created_at.asc(), PolicyPack.id.asc())
+                .all()
+            )
+        ],
+        "opa_bundle_revision": decision.context.get("opa_bundle_revision"),
+    }
 
 
 def _evaluate_policy_packs(context: PolicyContext, db: Session | None) -> PolicyDecisionOut | None:
@@ -506,7 +618,9 @@ def _evaluate_policy_packs(context: PolicyContext, db: Session | None) -> Policy
     return None
 
 
-def _evaluate_pack_rule(context: PolicyContext, pack: PolicyPack, rule: dict[str, Any]) -> PolicyDecisionOut | None:
+def _evaluate_pack_rule(
+    context: PolicyContext, pack: PolicyPack, rule: dict[str, Any]
+) -> PolicyDecisionOut | None:
     conditions = rule.get("when") or rule.get("conditions") or {}
     if not _conditions_match(context, conditions):
         return None
@@ -519,7 +633,11 @@ def _evaluate_pack_rule(context: PolicyContext, pack: PolicyPack, rule: dict[str
         severity=str(rule.get("severity") or "high"),
         matched_policy=f"{pack.name}:{rule.get('id') or rule.get('name') or 'rule'}",
         remediation=rule.get("remediation"),
-        context={**context.model_dump(), "policy_pack_id": pack.id, "policy_pack_version": pack.version},
+        context={
+            **_redacted_context(context),
+            "policy_pack_id": pack.id,
+            "policy_pack_version": pack.version,
+        },
     )
 
 
@@ -540,7 +658,9 @@ def _conditions_match(context: PolicyContext, conditions: dict[str, Any]) -> boo
         return False
     command_contains = conditions.get("command_contains")
     if command_contains:
-        command = str(context.tool.get("command") or context.tool.get("args", {}).get("command", ""))
+        command = str(
+            context.tool.get("command") or context.tool.get("args", {}).get("command", "")
+        )
         if str(command_contains).lower() not in command.lower():
             return False
     environment = conditions.get("environment")
@@ -554,7 +674,7 @@ def _evaluate_opa(context: PolicyContext) -> PolicyDecisionOut | None:
     if not settings.opa_url:
         return None
     try:
-        return _decision_from_opa_result(evaluate_opa(context.model_dump()), context)
+        return _decision_from_opa_result(evaluate_opa(_redacted_context(context)), context)
     except OpaUnavailable:
         return _opa_failure_decision(context, settings.policy_fail_mode)
 
@@ -570,16 +690,15 @@ def _decision_from_opa_result(result: dict[str, Any], context: PolicyContext) ->
         matched_policy=str(result.get("matched_policy") or "opa"),
         remediation=result.get("remediation"),
         context={
-            **context.model_dump(),
+            **_redacted_context(context),
             "policy_provider": "opa",
             "policy_revision": result.get("policy_revision"),
+            "opa_bundle_revision": result.get("bundle_revision") or result.get("revision"),
         },
     )
 
 
-def _opa_failure_decision(
-    context: PolicyContext, fail_mode: str
-) -> PolicyDecisionOut | None:
+def _opa_failure_decision(context: PolicyContext, fail_mode: str) -> PolicyDecisionOut | None:
     if fail_mode == "open":
         return None
     high_risk = (
@@ -596,5 +715,5 @@ def _opa_failure_decision(
         severity="high",
         matched_policy="opa_fail_mode",
         remediation="Restore the OPA policy service before retrying this action.",
-        context={**context.model_dump(), "policy_provider": "opa", "provider_status": "error"},
+        context={**_redacted_context(context), "policy_provider": "opa", "provider_status": "error"},
     )

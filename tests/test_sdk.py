@@ -1,4 +1,6 @@
-﻿from agentops_guard.sdk.tracing import AgentOpsTracer
+import json
+
+from agentops_guard.sdk.tracing import AgentOpsTracer
 
 
 class FakeClient:
@@ -52,3 +54,34 @@ def test_sdk_tracer_records_failed_run():
 
     assert any(event["event_type"] == "error" for event in client.events)
     assert client.updates[-1][1]["status"] == "failed"
+    assert client.updates[-1][1]["metadata"] == {"error_type": "RuntimeError"}
+
+
+def test_sdk_tracer_does_not_store_exception_message():
+    canary = "secret-value-that-must-not-be-recorded"
+    client = FakeClient()
+    tracer = AgentOpsTracer(client=client, project_id="default", agent_id="sdk-agent")
+
+    try:
+        with tracer.start_run(name="sdk fail"):
+            raise RuntimeError(canary)
+    except RuntimeError:
+        pass
+
+    assert canary not in json.dumps(
+        {"events": client.events, "updates": client.updates},
+        ensure_ascii=False,
+    )
+
+
+def test_sdk_tracer_redacts_detectable_secrets_before_sending():
+    canary = "sk-abcdefghijklmnopqrstuvwxyz123456"
+    client = FakeClient()
+    tracer = AgentOpsTracer(client=client, project_id="default", agent_id="sdk-agent")
+
+    with tracer.start_run(input_text=canary, metadata={"nested": {"token": canary}}):
+        tracer.record_state_change("safe", metadata={"token": canary})
+
+    assert canary not in json.dumps(
+        {"created": client.created, "events": client.events, "updates": client.updates}
+    )

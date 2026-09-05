@@ -1,0 +1,11 @@
+*
+!README.md
+!alembic.ini
+!pyproject.toml
+!uv.lock
+!src
+!src/**
+!policies
+!policies/**
+!alembic
+!alembic/**

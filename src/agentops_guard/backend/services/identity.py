@@ -8,9 +8,16 @@ from typing import Literal
 from sqlalchemy.orm import Session
 
 from agentops_guard.backend.config import get_settings
-from agentops_guard.backend.models import Membership, Organization, Project, Session as AuthSession, User
+from agentops_guard.backend.models import (
+    Membership,
+    Organization,
+    Project,
+    Session as AuthSession,
+    User,
+)
 from agentops_guard.backend.schemas import MembershipCreate, MembershipUpdate, OrganizationCreate
 from agentops_guard.backend.services.content import new_id
+from agentops_guard.backend.services.oidc import oidc_external_subject
 
 
 ROLE_CAPABILITIES: dict[str, list[str]] = {
@@ -22,6 +29,7 @@ ROLE_CAPABILITIES: dict[str, list[str]] = {
         "control:read",
         "control:admin",
         "mcp:read",
+        "mcp:invoke",
         "mcp:admin",
         "runs:read",
         "runs:write",
@@ -32,6 +40,7 @@ ROLE_CAPABILITIES: dict[str, list[str]] = {
         "approvals:read",
         "approvals:write",
         "audit:read",
+        "audit:write",
         "raw_content:read",
         "api_keys:write",
         "policies:read",
@@ -39,6 +48,7 @@ ROLE_CAPABILITIES: dict[str, list[str]] = {
         "scanner:read",
         "scanner:admin",
         "jobs:read",
+        "jobs:admin",
         "runs:admin",
         "credentials:write",
         "models:invoke",
@@ -68,6 +78,7 @@ ROLE_CAPABILITIES: dict[str, list[str]] = {
         "policies:read",
         "scanner:read",
         "mcp:read",
+        "mcp:invoke",
         "jobs:read",
     ],
     "read_only": [
@@ -95,7 +106,9 @@ def ensure_bootstrap_organization(db: Session) -> Organization:
     return organization
 
 
-def create_organization(db: Session, payload: OrganizationCreate) -> tuple[Organization, User, Membership, Project | None]:
+def create_organization(
+    db: Session, payload: OrganizationCreate
+) -> tuple[Organization, User, Membership, Project | None]:
     organization = Organization(
         id=new_id("org"),
         slug=payload.slug or _slugify(payload.name),
@@ -134,12 +147,20 @@ def list_organizations(db: Session) -> list[Organization]:
 
 
 def create_membership(db: Session, organization_id: str, payload: MembershipCreate) -> Membership:
+    if payload.oidc_subject is not None and get_settings().oidc_issuer is None:
+        raise ValueError("OIDC is not configured")
     user = _get_or_create_user(
         db,
         email=payload.email,
         display_name=payload.display_name,
-        provider="dev_stub",
+        provider="oidc" if payload.oidc_subject is not None else "dev_stub",
     )
+    if payload.oidc_subject is not None:
+        assert get_settings().oidc_issuer is not None
+        user.external_subject = oidc_external_subject(
+            get_settings().oidc_issuer,
+            payload.oidc_subject,
+        )
     membership = (
         db.query(Membership)
         .filter(Membership.organization_id == organization_id, Membership.user_id == user.id)
@@ -184,7 +205,9 @@ def create_dev_session(
             raise ValueError("Organization not found")
     else:
         organization = (
-            db.query(Organization).filter(Organization.name == (organization_name or "Default Organization")).first()
+            db.query(Organization)
+            .filter(Organization.name == (organization_name or "Default Organization"))
+            .first()
         )
         if organization is None:
             organization = Organization(
@@ -213,7 +236,9 @@ def create_dev_session(
         .first()
     )
     if project is None:
-        preferred_project_id = "default" if organization.slug == "default-organization" else new_id("project")
+        preferred_project_id = (
+            "default" if organization.slug == "default-organization" else new_id("project")
+        )
         if db.get(Project, preferred_project_id) is not None:
             preferred_project_id = new_id("project")
         project = Project(
@@ -233,7 +258,11 @@ def create_dev_session(
 
 
 def revoke_session(db: Session, session_token: str) -> None:
-    session = db.query(AuthSession).filter(AuthSession.token_hash == hash_session_token(session_token)).first()
+    session = (
+        db.query(AuthSession)
+        .filter(AuthSession.token_hash == hash_session_token(session_token))
+        .first()
+    )
     if session is None:
         return
     session.revoked_at = datetime.now(UTC)
@@ -241,7 +270,11 @@ def revoke_session(db: Session, session_token: str) -> None:
 
 
 def authenticate_session(db: Session, session_token: str) -> AuthSession | None:
-    row = db.query(AuthSession).filter(AuthSession.token_hash == hash_session_token(session_token)).first()
+    row = (
+        db.query(AuthSession)
+        .filter(AuthSession.token_hash == hash_session_token(session_token))
+        .first()
+    )
     if row is None or row.revoked_at is not None:
         return None
     membership = db.get(Membership, row.membership_id)
@@ -294,11 +327,7 @@ def create_session_record(
 
 def _slugify(value: str) -> str:
     return (
-        value.lower()
-        .replace(" ", "-")
-        .replace("_", "-")
-        .replace("/", "-")
-        .strip("-")
+        value.lower().replace(" ", "-").replace("_", "-").replace("/", "-").strip("-")
     ) or "organization"
 
 
@@ -321,7 +350,9 @@ def _get_or_create_user(db: Session, *, email: str, display_name: str, provider:
     return user
 
 
-def _create_membership_row(db: Session, organization_id: str, user_id: str, role: str) -> Membership:
+def _create_membership_row(
+    db: Session, organization_id: str, user_id: str, role: str
+) -> Membership:
     membership = Membership(
         id=new_id("membership"),
         organization_id=organization_id,

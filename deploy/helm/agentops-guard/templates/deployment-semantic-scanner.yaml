@@ -1,0 +1,79 @@
+{{- if ne .Values.semanticScanner.mode "disabled" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentops-guard.name" . }}-semantic-scanner
+spec:
+  replicas: {{ .Values.replicaCount.semanticScanner }}
+  selector:
+    matchLabels:
+      app: agentops-guard-semantic-scanner
+  template:
+    metadata:
+      labels:
+        app: agentops-guard-semantic-scanner
+    spec:
+      serviceAccountName: {{ required "serviceAccounts.semanticScanner is required" .Values.serviceAccounts.semanticScanner | quote }}
+      automountServiceAccountToken: false
+      {{- include "agentops-guard.podSecurityContext" . | nindent 6 }}
+      {{- if .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range .Values.image.pullSecrets }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: semantic-scanner
+          image: {{ include "agentops-guard.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uvicorn", "agentops_guard.semantic_service.app:app", "--host", "0.0.0.0", "--port", "8090"]
+          {{- include "agentops-guard.containerSecurityContext" . | nindent 10 }}
+          env:
+            - name: AGENTOPS_COMPONENT
+              value: semantic_scanner
+            - name: AGENTOPS_SEMANTIC_SCANNER_MODE
+              value: {{ .Values.semanticScanner.mode | quote }}
+            - name: AGENTOPS_SEMANTIC_MODEL_PATH
+              value: {{ .Values.semanticScanner.modelPath | quote }}
+            - name: AGENTOPS_SEMANTIC_MODEL_SHA256
+              value: {{ required "semanticScanner.modelSha256 is required" .Values.semanticScanner.modelSha256 | quote }}
+            - name: AGENTOPS_SEMANTIC_SCANNER_THRESHOLD
+              value: {{ .Values.semanticScanner.threshold | quote }}
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+          ports:
+            - containerPort: 8090
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8090
+            periodSeconds: 15
+            timeoutSeconds: 15
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+          resources:
+            {{- toYaml .Values.resources.semanticScanner | nindent 12 }}
+          volumeMounts:
+            - name: semantic-guard-model
+              mountPath: {{ .Values.semanticScanner.modelPath | quote }}
+              readOnly: true
+            - name: temporary-files
+              mountPath: /tmp
+      volumes:
+        - name: semantic-guard-model
+          {{ if .Values.semanticScanner.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.semanticScanner.existingClaim | quote }}
+          {{ else }}
+          hostPath:
+            path: {{ required "semanticScanner.existingClaim or hostPath is required" .Values.semanticScanner.hostPath | quote }}
+            type: Directory
+          {{ end }}
+        - name: temporary-files
+          emptyDir: {}
+{{- end }}

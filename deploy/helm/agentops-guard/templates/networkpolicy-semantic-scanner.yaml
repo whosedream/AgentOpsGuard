@@ -1,0 +1,20 @@
+{{- if ne .Values.semanticScanner.mode "disabled" }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentops-guard.name" . }}-semantic-scanner
+spec:
+  podSelector:
+    matchLabels:
+      app: agentops-guard-semantic-scanner
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-gateway
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.semanticScannerPort }}
+  egress: []
+{{- end }}

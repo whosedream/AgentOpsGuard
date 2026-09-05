@@ -32,7 +32,9 @@ POLICY_DECISIONS_GAUGE = Gauge(
     ("action", "severity"),
     registry=PROMETHEUS_REGISTRY,
 )
-APPROVALS_PENDING_GAUGE = Gauge("agentops_approvals_pending", "Total pending approvals", registry=PROMETHEUS_REGISTRY)
+APPROVALS_PENDING_GAUGE = Gauge(
+    "agentops_approvals_pending", "Total pending approvals", registry=PROMETHEUS_REGISTRY
+)
 POLICY_PACKS_GAUGE = Gauge(
     "agentops_policy_packs_total",
     "Total policy packs by status",
@@ -63,6 +65,30 @@ JOBS_BY_STATUS_GAUGE = Gauge(
     ("kind", "status"),
     registry=PROMETHEUS_REGISTRY,
 )
+OUTBOX_BY_STATUS_GAUGE = Gauge(
+    "agentops_outbox_events_total",
+    "Total transactional outbox events by status",
+    ("status",),
+    registry=PROMETHEUS_REGISTRY,
+)
+EXECUTIONS_BY_STATUS_GAUGE = Gauge(
+    "agentops_execution_requests_total",
+    "Total durable execution requests by status",
+    ("status",),
+    registry=PROMETHEUS_REGISTRY,
+)
+JOB_LEASE_RECOVERIES_COUNTER = Counter(
+    "agentops_job_lease_recoveries_total",
+    "Background jobs recovered after an expired worker lease",
+    ("outcome",),
+    registry=PROMETHEUS_REGISTRY,
+)
+JOB_HEARTBEAT_FAILURES_COUNTER = Counter(
+    "agentops_job_heartbeat_failures_total",
+    "Background job heartbeat failures",
+    ("reason",),
+    registry=PROMETHEUS_REGISTRY,
+)
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -72,8 +98,11 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         start = time.perf_counter()
         response: Response = await call_next(request)
         duration_ms = int((time.perf_counter() - start) * 1000)
-        route = request.url.path
-        REQUEST_COUNTER.labels(method=request.method, route=route, status=str(response.status_code)).inc()
+        matched_route = request.scope.get("route")
+        route = getattr(matched_route, "path", "unmatched")
+        REQUEST_COUNTER.labels(
+            method=request.method, route=route, status=str(response.status_code)
+        ).inc()
         REQUEST_LATENCY.labels(method=request.method, route=route).observe(duration_ms)
         response.headers["X-Request-Id"] = request_id
         log_record = {
@@ -83,9 +112,6 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             "status": response.status_code,
             "duration_ms": duration_ms,
         }
-        project_id = request.query_params.get("project_id")
-        if project_id:
-            log_record["project_id"] = project_id
         print(json.dumps(log_record, separators=(",", ":")), flush=True)
         return response
 

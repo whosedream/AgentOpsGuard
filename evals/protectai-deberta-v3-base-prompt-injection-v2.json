@@ -1,0 +1,17 @@
+{
+  "source": "https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2",
+  "revision": "90c9989b1a342275dd0d1a95aad283c04e075671",
+  "license": "Apache-2.0",
+  "risk_label": "INJECTION",
+  "runtime_manifest_sha256": "cac8d029b92db3d555f94d3dc103223d4e7786b7bf5e38ef5ced654da56719c8",
+  "files": {
+    "LICENSE": "2514772e5475f208616174f81b67168179a7c51bdcb9570a96a9dc5962b83116",
+    "added_tokens.json": "a4b6bfe668f2b3cf6f0cd535e98a0663d2d0d4a4a15f13075ad3597d33985a23",
+    "config.json": "aafe5f7bba4d720300d6237c074c156df595a66d00a85004bc297c67937f5a38",
+    "model.safetensors": "6521cb8d0ac08148c81464899c424e6148fcc62befa371089fa4061d8b6e0424",
+    "special_tokens_map.json": "ed7c099c988dbb414b18a6980d20cb57b91b7cd119f6f6941eb364b0e892e712",
+    "spm.model": "c679fbf93643d19aab7ee10c0b99e460bdbc02fedf34b92b05af343b4af586fd",
+    "tokenizer.json": "9b81eccb641d5e7b8a68c1b9e872aa3b04c22c3468d2235678ec8a7e4f87ff1d",
+    "tokenizer_config.json": "498d4c2c98e720bac5b31ea9c39fe58dfd92769f5ed1187349099e3698f3da4b"
+  }
+}

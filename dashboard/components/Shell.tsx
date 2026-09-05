@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { Activity, Bot, BriefcaseBusiness, ClipboardCheck, FileWarning, FolderKanban, LayoutDashboard, LogOut, ScanSearch, Shield, TestTubeDiagonal, Wrench } from "lucide-react";
+import { Activity, Bot, BriefcaseBusiness, ClipboardCheck, FileWarning, FolderKanban, LayoutDashboard, ListChecks, LogOut, ScanSearch, Shield, TestTubeDiagonal, Wrench } from "lucide-react";
 
 import type { AuthContext } from "../lib/api";
-import { atLeastRole, canAccessPolicy, canAccessScanner, canReadGovernance, canTestMcp } from "../lib/auth";
+import { atLeastRole, canAccessPolicy, canAccessScanner, canReadGovernance, canReadJobs, canTestMcp } from "../lib/auth";
 import { LogoutButton } from "./auth/LogoutButton";
 
 type NavItem = {
@@ -19,6 +19,7 @@ const navItems: NavItem[] = [
   { label: "Risks", href: "/risks", icon: FileWarning, visible: () => true },
   { label: "Replays", href: "/replays", icon: ClipboardCheck, visible: () => true },
   { label: "Evals", href: "/evals", icon: TestTubeDiagonal, visible: () => true },
+  { label: "Jobs", href: "/jobs", icon: ListChecks, visible: (auth) => canReadJobs(auth) },
   { label: "Scanner", href: "/scanner", icon: ScanSearch, visible: (auth) => canAccessScanner(auth) },
   { label: "Policy", href: "/policy", icon: Shield, visible: (auth) => canAccessPolicy(auth) },
   { label: "Governance", href: "/governance", icon: FolderKanban, visible: (auth) => canReadGovernance(auth) },

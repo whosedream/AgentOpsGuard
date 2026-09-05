@@ -1,0 +1,331 @@
+name: Supply chain
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  osv-lockfiles:
+    permissions:
+      contents: read
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@0c58c542420dfd23fcac08dd9c8ca3cca9c36f1a # v2.5.0
+    with:
+      upload-sarif: false
+      fail-on-vuln: true
+      scan-args: |-
+        --lockfile=./uv.lock
+        --lockfile=./dashboard/package-lock.json
+
+  dependency-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.1"
+          python-version: "3.12"
+      - name: Install the locked production environment
+        run: uv sync --locked --no-dev --extra semantic --no-install-project
+      - name: Generate and validate a reproducible CycloneDX SBOM
+        run: uv run --no-sync python scripts/generate_python_sbom.py --output artifacts/agentops-guard-python.cdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agentops-guard-python-sbom
+          path: artifacts/agentops-guard-python.cdx.json
+          if-no-files-found: error
+      - name: Reject known Python vulnerabilities or unaudited packages
+        run: |
+          site_packages="$(uv run --no-sync python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+          uvx --from pip-audit==2.10.1 pip-audit --strict --path "$site_packages"
+
+  dashboard-dependencies:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.1"
+          python-version: "3.12"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - name: Generate and validate the Dashboard CycloneDX SBOM
+        run: uv run --no-project --python 3.12 python ../scripts/generate_dashboard_sbom.py --output ../artifacts/agentops-guard-dashboard.cdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agentops-guard-dashboard-sbom
+          path: artifacts/agentops-guard-dashboard.cdx.json
+          if-no-files-found: error
+      - run: npm audit --omit=dev --audit-level=high
+
+  build-scan-images:
+    name: Build and scan ${{ matrix.name }} image
+    needs: [osv-lockfiles, dependency-evidence, dashboard-dependencies]
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: application
+            context: .
+            dockerfile: ./Dockerfile
+            image_suffix: ""
+          - name: dashboard
+            context: ./dashboard
+            dockerfile: ./dashboard/Dockerfile
+            image_suffix: -dashboard
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Derive the repository-scoped image name
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+          IMAGE_SUFFIX: ${{ matrix.image_suffix }}
+        run: |
+          image_repository="ghcr.io/${REPOSITORY,,}${IMAGE_SUFFIX}"
+          echo "repository=$image_repository" >> "$GITHUB_OUTPUT"
+          echo "tag=$image_repository:sha-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Set up the isolated BuildKit builder
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        with:
+          version: v0.36.1
+          driver-opts: >-
+            image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          buildkitd-flags: --oci-worker-gc=true
+          cache-binary: false
+      - name: Verify the pinned Buildx executable before registry login
+        run: |
+          buildx_path="$(docker info --format '{{range .ClientInfo.Plugins}}{{if eq .Name "buildx"}}{{.Path}}{{end}}{{end}}')"
+          test -n "$buildx_path"
+          test "$(sha256sum "$buildx_path" | cut -d ' ' -f 1)" = \
+            "48af8a397ebd60178778bf63611dbcebe5f5e7a9be90eb9147b24b9587455778"
+          test "$(docker buildx version | awk '{print $2}')" = "v0.36.1"
+      - name: Install the reviewed Trivy scanner without a repository token
+        uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514 # v0.2.6
+        with:
+          version: v0.70.0
+          cache: false
+          token: ""
+      - name: Verify the pinned Trivy executable before registry login
+        run: |
+          test "$(sha256sum "$(command -v trivy)" | cut -d ' ' -f 1)" = \
+            "379d59f24a4a828c55de5f0b91b6805cc35d13580180b658820e648611256166"
+          test "$(trivy --version | awk '/Version:/ {print $2}')" = "0.70.0"
+      - name: Install the integrity-checked Cosign release before registry login
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+      - name: Verify the pinned Cosign executable before registry login
+        run: |
+          test "$(sha256sum "$(command -v cosign)" | cut -d ' ' -f 1)" = \
+            "c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74"
+      - name: Log in to the repository package registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the commit-addressed image
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        env:
+          BUILDX_GIT_CHECK_DIRTY: "1"
+          BUILDX_GIT_LABELS: full
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          pull: true
+          push: true
+          tags: ${{ steps.image.outputs.tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          provenance: mode=max
+          github-token: ""
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: Extract and validate attached provenance
+        env:
+          IMAGE_REPOSITORY: ${{ steps.image.outputs.repository }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE_REPOSITORY@$IMAGE_DIGEST" \
+            --format '{{ json .Provenance.SLSA }}' > "$RUNNER_TEMP/provenance-${{ matrix.name }}.json"
+          jq -e --arg revision "$GITHUB_SHA" \
+            '.buildType == "https://mobyproject.org/buildkit@v1" and
+             .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs.revision == $revision' \
+            "$RUNNER_TEMP/provenance-${{ matrix.name }}.json" > /dev/null
+      - name: Generate the image SBOM and scan the exact digest
+        id: scan
+        env:
+          IMAGE_REPOSITORY: ${{ steps.image.outputs.repository }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          image="$IMAGE_REPOSITORY@$IMAGE_DIGEST"
+          trivy image --timeout 10m --format cyclonedx \
+            --output "$RUNNER_TEMP/sbom-${{ matrix.name }}.cdx.json" "$image"
+          jq -e '.bomFormat == "CycloneDX" and (.components | length > 0)' \
+            "$RUNNER_TEMP/sbom-${{ matrix.name }}.cdx.json" > /dev/null
+          trivy image --timeout 10m --scanners vuln --severity HIGH,CRITICAL \
+            --ignore-unfixed --exit-code 1 --format json \
+            --output "$RUNNER_TEMP/trivy-${{ matrix.name }}.json" "$image"
+      - name: Preserve non-secret image evidence
+        if: ${{ always() && steps.scan.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: supply-chain-${{ matrix.name }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/provenance-${{ matrix.name }}.json
+            ${{ runner.temp }}/sbom-${{ matrix.name }}.cdx.json
+            ${{ runner.temp }}/trivy-${{ matrix.name }}.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Package verified inputs for the isolated signing job
+        env:
+          IMAGE_REPOSITORY: ${{ steps.image.outputs.repository }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign_path="$(command -v cosign)"
+          test "$(sha256sum "$cosign_path" | cut -d ' ' -f 1)" = \
+            "c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74"
+          input_dir="$RUNNER_TEMP/release-input-${{ matrix.name }}"
+          mkdir -p "$input_dir"
+          cp "$cosign_path" "$input_dir/cosign"
+          cp "$RUNNER_TEMP/provenance-${{ matrix.name }}.json" "$input_dir/provenance.json"
+          cp "$RUNNER_TEMP/sbom-${{ matrix.name }}.cdx.json" "$input_dir/sbom.cdx.json"
+          jq -n \
+            --arg repository "$IMAGE_REPOSITORY" \
+            --arg digest "$IMAGE_DIGEST" \
+            --arg revision "$GITHUB_SHA" \
+            '{schema_version: 1, repository: $repository, digest: $digest, revision: $revision}' \
+            > "$input_dir/subject.json"
+      - name: Transfer only verified release inputs to the signing job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-input-${{ matrix.name }}-${{ github.sha }}
+          path: ${{ runner.temp }}/release-input-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-images:
+    name: Sign and verify ${{ matrix.name }} image
+    needs: [build-scan-images]
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: application
+            image_suffix: ""
+          - name: dashboard
+            image_suffix: -dashboard
+    steps:
+      - name: Download the verified build and scan outputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-input-${{ matrix.name }}-${{ github.sha }}
+          path: ${{ runner.temp }}/release-input
+          digest-mismatch: error
+      - name: Validate the exact subject without executing project code
+        id: subject
+        env:
+          IMAGE_SUFFIX: ${{ matrix.image_suffix }}
+        run: |
+          input_dir="$RUNNER_TEMP/release-input"
+          expected_repository="ghcr.io/${GITHUB_REPOSITORY,,}${IMAGE_SUFFIX}"
+          jq -e \
+            --arg repository "$expected_repository" \
+            --arg revision "$GITHUB_SHA" \
+            '.schema_version == 1 and .repository == $repository and
+             .revision == $revision and (.digest | test("^sha256:[0-9a-f]{64}$"))' \
+            "$input_dir/subject.json" > /dev/null
+          test "$(sha256sum "$input_dir/cosign" | cut -d ' ' -f 1)" = \
+            "c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74"
+          chmod 0500 "$input_dir/cosign"
+          echo "repository=$expected_repository" >> "$GITHUB_OUTPUT"
+          echo "digest=$(jq -r .digest "$input_dir/subject.json")" >> "$GITHUB_OUTPUT"
+      - name: Log in only after every build and scan gate passed
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Sign the exact attestations and image digest with the short-lived workflow identity
+        env:
+          IMAGE_REPOSITORY: ${{ steps.subject.outputs.repository }}
+          IMAGE_DIGEST: ${{ steps.subject.outputs.digest }}
+        run: |
+          input_dir="$RUNNER_TEMP/release-input"
+          image="$IMAGE_REPOSITORY@$IMAGE_DIGEST"
+          "$input_dir/cosign" attest --yes --type slsaprovenance02 \
+            --predicate "$input_dir/provenance.json" "$image"
+          "$input_dir/cosign" attest --yes --type cyclonedx \
+            --predicate "$input_dir/sbom.cdx.json" "$image"
+          "$input_dir/cosign" sign --yes "$image"
+      - name: Verify signatures, attestations, and workflow identity
+        env:
+          IMAGE_REPOSITORY: ${{ steps.subject.outputs.repository }}
+          IMAGE_DIGEST: ${{ steps.subject.outputs.digest }}
+          CERTIFICATE_IDENTITY: >-
+            ${{ github.server_url }}/${{ github.repository }}/.github/workflows/supply-chain.yml@${{ github.ref }}
+        run: |
+          input_dir="$RUNNER_TEMP/release-input"
+          image="$IMAGE_REPOSITORY@$IMAGE_DIGEST"
+          identity_args=(
+            --certificate-identity "$CERTIFICATE_IDENTITY"
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          )
+          "$input_dir/cosign" verify "${identity_args[@]}" "$image" \
+            > "$RUNNER_TEMP/cosign-signature-${{ matrix.name }}.json"
+          "$input_dir/cosign" verify-attestation \
+            "${identity_args[@]}" --type slsaprovenance02 "$image" \
+            > "$RUNNER_TEMP/cosign-provenance-${{ matrix.name }}.json"
+          "$input_dir/cosign" verify-attestation \
+            "${identity_args[@]}" --type cyclonedx "$image" \
+            > "$RUNNER_TEMP/cosign-sbom-${{ matrix.name }}.json"
+          test -s "$RUNNER_TEMP/cosign-signature-${{ matrix.name }}.json"
+          test -s "$RUNNER_TEMP/cosign-provenance-${{ matrix.name }}.json"
+          test -s "$RUNNER_TEMP/cosign-sbom-${{ matrix.name }}.json"
+      - name: Preserve verified signing evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-release-${{ matrix.name }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/cosign-signature-${{ matrix.name }}.json
+            ${{ runner.temp }}/cosign-provenance-${{ matrix.name }}.json
+            ${{ runner.temp }}/cosign-sbom-${{ matrix.name }}.json
+          if-no-files-found: error
+          retention-days: 30

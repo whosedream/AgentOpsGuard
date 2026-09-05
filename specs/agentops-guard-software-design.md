@@ -326,7 +326,7 @@ sequenceDiagram
 
 ### 6.2 运行时隔离
 
-- 每个 stdio server 使用独立进程组。
+- 每个 stdio server 使用独立受管进程；需要完整子进程树隔离时交给 ToolHive 或容器运行时。
 - 配置启动超时、调用超时、最大输出、最大并发。
 - stderr 进入结构化日志，必要时关联 McpServer health。
 - 上游异常统一转为 MCP error content，不泄露内部 stack trace。

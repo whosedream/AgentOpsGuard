@@ -1,0 +1,147 @@
+{
+  "datasets": [
+    {
+      "corpusSha256": "b9e626a936311cd2cf0ec250aeea8f0f1e885a64beb2bd1ec1829359ba744c73",
+      "counts": {
+        "attack": 140,
+        "benign": 97
+      },
+      "custodianRef": "custodian_historical_import",
+      "firstRun": {
+        "completedAt": "2026-09-04T00:57:52.043267Z",
+        "frozenSystemSha256": "d1b4c576065c118861db2f7432fc62b27c09231796328e195fe7dfc051c9b90c",
+        "outcome": "succeeded",
+        "reportSha256": "84fc70e9df645e6f26b33957b57acc518ea0756361fa49e45b512dd2efc1583b",
+        "runRef": "agentdojo_static_first_run_v1",
+        "startedAt": "2026-09-04T00:57:52.043267Z"
+      },
+      "frozenSystemSha256": "d1b4c576065c118861db2f7432fc62b27c09231796328e195fe7dfc051c9b90c",
+      "id": "agentdojo_static_v1",
+      "role": "regression",
+      "source": {
+        "license": "MIT",
+        "name": "ethz-spylab/agentdojo",
+        "revision": "0.1.35-benchmark-v1.2.2"
+      },
+      "state": "consumed"
+    },
+    {
+      "corpusSha256": "085d4c01c64b7ebbbd52503cabb5adf008032aca73503ed4720e4e62748132c3",
+      "counts": {
+        "attack": 13750,
+        "benign": 200
+      },
+      "custodianRef": "custodian_historical_import",
+      "firstRun": {
+        "completedAt": "2026-09-04T04:31:29.610402Z",
+        "frozenSystemSha256": "949da7aac1d0a526205f39eacd1a42ca255c2f1da0ff948f5a5f32ed59261930",
+        "outcome": "succeeded",
+        "reportSha256": "4e9bb897996d85cad3e7bc15859abecd6b361a448d1e30a22e9a1063f74e53e6",
+        "runRef": "bipia_static_first_run_v1",
+        "startedAt": "2026-09-04T04:31:29.610402Z"
+      },
+      "frozenSystemSha256": "949da7aac1d0a526205f39eacd1a42ca255c2f1da0ff948f5a5f32ed59261930",
+      "id": "bipia_static_v1",
+      "role": "regression",
+      "source": {
+        "license": "MIT-code-upstream-data-terms",
+        "name": "microsoft/bipia",
+        "revision": "a004b69ec0dd446e0afd461d98cb5e96e120a5d0"
+      },
+      "state": "consumed"
+    },
+    {
+      "corpusSha256": "c63018476320b64f7d74deaf1bd91fb0728439483a646135e1014131417f8b1b",
+      "counts": {
+        "attack": 7,
+        "benign": 2
+      },
+      "custodianRef": "custodian_historical_import",
+      "firstRun": {
+        "completedAt": "2026-09-04T02:56:25.483144Z",
+        "frozenSystemSha256": "2b6eed75da04da334a2db47e026a1eb122ca17ecae1be187e2a38cd73749c760",
+        "outcome": "succeeded",
+        "reportSha256": "7ad3bc0f32ca788be566075358761ca0718e9ac25fd03eec29f12549a67901d0",
+        "runRef": "agentdojo_dynamic_first_run_v1",
+        "startedAt": "2026-09-04T02:56:25.483144Z"
+      },
+      "frozenSystemSha256": "2b6eed75da04da334a2db47e026a1eb122ca17ecae1be187e2a38cd73749c760",
+      "id": "agentdojo_dynamic_v1",
+      "role": "regression",
+      "source": {
+        "license": "MIT",
+        "name": "ethz-spylab/agentdojo",
+        "revision": "0.1.35-benchmark-v1.2.2"
+      },
+      "state": "consumed"
+    },
+    {
+      "corpusSha256": "3329da17564a7eb287e2730fc7d6956e1f4fe51e8950ac4f110b3c37e78cf3b9",
+      "counts": {
+        "attack": 1272,
+        "benign": 1272,
+        "matched_clean": 1272
+      },
+      "id": "nemotron_agentic_ipi_v1",
+      "role": "regression",
+      "source": {
+        "license": "CC-BY-4.0",
+        "name": "nvidia/nemotron-agentic-ipi-v1",
+        "revision": "d738d4f361cc38bb4d7a42b9066776dade5332f5"
+      },
+      "state": "available"
+    },
+    {
+      "corpusSha256": "379cbbe6d65f732ffc9df2f1983e95f975051294ccdab059ac7a55c3ed01a7ac",
+      "counts": {
+        "attack": 1054,
+        "benign": 17
+      },
+      "custodianRef": "local_noninteractive_importer",
+      "firstRun": {
+        "completedAt": "2026-09-04T09:31:54.315204Z",
+        "frozenSystemSha256": "1cdd4b69586117d2ec375ce8ca1aebb9daae5452f71030a206553d03eaaf198b",
+        "outcome": "succeeded",
+        "reportSha256": "8280fb906b2fff696ac6b6f05454f367ba0563503c0556d0b9accee0c8298e98",
+        "runRef": "injecagent_static_first_run_v1",
+        "startedAt": "2026-09-04T09:31:08.565591Z"
+      },
+      "frozenSystemSha256": "1cdd4b69586117d2ec375ce8ca1aebb9daae5452f71030a206553d03eaaf198b",
+      "id": "injecagent_static_v1",
+      "role": "regression",
+      "source": {
+        "license": "MIT",
+        "name": "uiuc-kang-lab/injecagent",
+        "revision": "f19c9f2c79a41046eb13c03c51a24c567a8ffa07"
+      },
+      "state": "consumed"
+    },
+    {
+      "corpusSha256": "d9792b283faa78b33e9b6a81c86e2f84e0eccc02c70f21aa70361287cb7cb7aa",
+      "counts": {
+        "attack": 19,
+        "benign": 5
+      },
+      "custodianRef": "pypi_pinned_noninteractive_importer",
+      "firstRun": {
+        "completedAt": "2026-09-04T21:29:34.832843Z",
+        "frozenSystemSha256": "f4e4c4c27bb3a5e5e3919bcb77a8aa7b8b255058eaeed12d258a930076164c90",
+        "outcome": "succeeded",
+        "reportSha256": "80507f802b90ad7856ec2ba81864bc84694541d8079f9fd63abbe6ef5bf7d5c0",
+        "runRef": "agent_threat_bench_dynamic_first_run_v1",
+        "startedAt": "2026-09-04T20:47:36.700969Z"
+      },
+      "frozenSystemSha256": "f4e4c4c27bb3a5e5e3919bcb77a8aa7b8b255058eaeed12d258a930076164c90",
+      "id": "agent_threat_bench_dynamic_v1",
+      "role": "regression",
+      "source": {
+        "license": "MIT",
+        "name": "UKGovernmentBEIS/inspect_evals",
+        "revision": "v0.16.0-3367d26374083aa794600b9c06b0b4f76faad76d-agent-threat-1-A"
+      },
+      "state": "consumed"
+    }
+  ],
+  "manifestRevision": 7,
+  "schemaVersion": 1
+}

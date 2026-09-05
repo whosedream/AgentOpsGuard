@@ -12,6 +12,9 @@ spec:
       labels:
         app: agentops-guard-api
     spec:
+      serviceAccountName: {{ required "serviceAccounts.api is required" .Values.serviceAccounts.api | quote }}
+      automountServiceAccountToken: false
+      {{- include "agentops-guard.podSecurityContext" . | nindent 6 }}
       {{- if .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- range .Values.image.pullSecrets }}
@@ -20,15 +23,44 @@ spec:
       {{- end }}
       containers:
         - name: api
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "agentops-guard.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["uv", "run", "uvicorn", "agentops_guard.backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          command: ["uvicorn", "agentops_guard.backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          {{- include "agentops-guard.containerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: temporary-files
+              mountPath: /tmp
+            {{- if and (or (eq .Values.credentialStore.backend "openbao") (eq .Values.auditCheckpoints.backend "openbao")) (eq .Values.credentialStore.openbaoAuthMethod "approle") }}
+            - name: openbao-approle-secret-id
+              mountPath: /var/run/secrets/agentops/openbao
+              readOnly: true
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "agentops-guard.name" . }}-config
-            - secretRef:
-                name: {{ include "agentops-guard.name" . }}-secret
           env:
+            - name: AGENTOPS_COMPONENT
+              value: api
+            - name: AGENTOPS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "runtimeSecret.existingSecret is required" .Values.runtimeSecret.existingSecret | quote }}
+                  key: {{ .Values.runtimeSecret.databaseUrlKey | quote }}
+            - name: AGENTOPS_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtimeSecret.existingSecret | quote }}
+                  key: {{ .Values.runtimeSecret.redisUrlKey | quote }}
+            - name: AGENTOPS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtimeSecret.existingSecret | quote }}
+                  key: {{ .Values.runtimeSecret.apiKeyKey | quote }}
+            - name: AGENTOPS_OPERATOR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtimeSecret.existingSecret | quote }}
+                  key: {{ .Values.runtimeSecret.operatorApiKeyKey | quote }}
             - name: AGENTOPS_CREDENTIAL_STORE
               value: {{ .Values.credentialStore.backend | quote }}
             {{- if .Values.credentialEncryption.existingSecret }}
@@ -38,18 +70,38 @@ spec:
                   name: {{ .Values.credentialEncryption.existingSecret | quote }}
                   key: {{ .Values.credentialEncryption.key | quote }}
             {{- end }}
-            {{- if eq .Values.credentialStore.backend "openbao" }}
+            {{- if or (eq .Values.credentialStore.backend "openbao") (eq .Values.auditCheckpoints.backend "openbao") }}
             - name: AGENTOPS_OPENBAO_URL
+              {{- if eq .Values.credentialStore.openbaoAuthMethod "proxy" }}
+              value: {{ printf "http://127.0.0.1:%v" .Values.openbaoProxy.port | quote }}
+              {{- else }}
               value: {{ required "credentialStore.openbaoUrl is required for OpenBao" .Values.credentialStore.openbaoUrl | quote }}
-            - name: AGENTOPS_OPENBAO_KV_MOUNT
-              value: {{ .Values.credentialStore.openbaoKvMount | quote }}
+              {{- end }}
             - name: AGENTOPS_OPENBAO_TIMEOUT_SECONDS
               value: {{ .Values.credentialStore.openbaoTimeoutSeconds | quote }}
+            - name: AGENTOPS_OPENBAO_AUTH_METHOD
+              value: {{ .Values.credentialStore.openbaoAuthMethod | quote }}
+            {{- if eq .Values.credentialStore.openbaoAuthMethod "token" }}
             - name: AGENTOPS_OPENBAO_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ required "credentialStore.openbaoExistingSecret is required for OpenBao" .Values.credentialStore.openbaoExistingSecret | quote }}
                   key: {{ .Values.credentialStore.openbaoTokenKey | quote }}
+            {{- else if eq .Values.credentialStore.openbaoAuthMethod "approle" }}
+            - name: AGENTOPS_OPENBAO_APPROLE_ROLE_ID
+              value: {{ required "credentialStore.openbaoAppRoleRoleId is required for AppRole" .Values.credentialStore.openbaoAppRoleRoleId | quote }}
+            - name: AGENTOPS_OPENBAO_APPROLE_SECRET_ID_FILE
+              value: /var/run/secrets/agentops/openbao/secret-id
+            - name: AGENTOPS_OPENBAO_APPROLE_MOUNT
+              value: {{ .Values.credentialStore.openbaoAppRoleMount | quote }}
+            {{- else if eq .Values.credentialStore.openbaoAuthMethod "proxy" }}
+            {{- else }}
+            {{- fail "credentialStore.openbaoAuthMethod must be token, approle, or proxy" }}
+            {{- end }}
+            {{- end }}
+            {{- if eq .Values.credentialStore.backend "openbao" }}
+            - name: AGENTOPS_OPENBAO_KV_MOUNT
+              value: {{ .Values.credentialStore.openbaoKvMount | quote }}
             {{- end }}
             {{- if .Values.opa.enabled }}
             - name: AGENTOPS_OPA_URL
@@ -58,6 +110,10 @@ spec:
               value: {{ .Values.opa.timeoutSeconds | quote }}
             - name: AGENTOPS_POLICY_FAIL_MODE
               value: {{ .Values.opa.policyFailMode | quote }}
+            {{- if .Values.opa.bundle.enabled }}
+            - name: AGENTOPS_OPA_EXPECTED_POLICY_REVISION
+              value: {{ .Values.opa.bundle.expectedPolicyRevision | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.telemetry.enabled }}
             - name: AGENTOPS_OTEL_ENABLED
@@ -81,3 +137,76 @@ spec:
               port: 8000
           resources:
             {{- toYaml .Values.resources.api | nindent 12 }}
+        {{- if and (eq .Values.credentialStore.openbaoAuthMethod "proxy") (or (eq .Values.credentialStore.backend "openbao") (eq .Values.auditCheckpoints.backend "openbao")) }}
+        - name: openbao-proxy
+          image: {{ include "agentops-guard.openbaoProxyImage" . | quote }}
+          imagePullPolicy: {{ .Values.openbaoProxy.image.pullPolicy }}
+          command:
+            - bao
+            - proxy
+            - -config=/etc/openbao-proxy/proxy.hcl
+            - -log-level=warn
+          {{- include "agentops-guard.containerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: openbao-proxy-config
+              mountPath: /etc/openbao-proxy
+              readOnly: true
+            - name: openbao-proxy-identity
+              mountPath: /var/run/secrets/agentops/openbao
+              readOnly: true
+            {{- if .Values.credentialStore.openbaoCaExistingSecret }}
+            - name: openbao-ca
+              mountPath: /var/run/secrets/agentops/openbao-ca
+              readOnly: true
+            {{- end }}
+            - name: openbao-proxy-temporary-files
+              mountPath: /tmp
+          ports:
+            - name: openbao-proxy
+              containerPort: {{ .Values.openbaoProxy.port }}
+          readinessProbe:
+            tcpSocket:
+              port: openbao-proxy
+          livenessProbe:
+            tcpSocket:
+              port: openbao-proxy
+          resources:
+            {{- toYaml .Values.openbaoProxy.resources | nindent 12 }}
+        {{- end }}
+      volumes:
+        - name: temporary-files
+          emptyDir: {}
+        {{- if and (or (eq .Values.credentialStore.backend "openbao") (eq .Values.auditCheckpoints.backend "openbao")) (eq .Values.credentialStore.openbaoAuthMethod "approle") }}
+        - name: openbao-approle-secret-id
+          secret:
+            secretName: {{ required "credentialStore.openbaoExistingSecret is required for AppRole" .Values.credentialStore.openbaoExistingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.credentialStore.openbaoAppRoleSecretIdKey | quote }}
+                path: secret-id
+        {{- end }}
+        {{- if and (eq .Values.credentialStore.openbaoAuthMethod "proxy") (or (eq .Values.credentialStore.backend "openbao") (eq .Values.auditCheckpoints.backend "openbao")) }}
+        - name: openbao-proxy-config
+          configMap:
+            name: {{ include "agentops-guard.name" . }}-openbao-proxy-api
+        - name: openbao-proxy-identity
+          secret:
+            secretName: {{ required "credentialStore.openbaoExistingSecret is required for OpenBao Proxy" .Values.credentialStore.openbaoExistingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.credentialStore.openbaoAppRoleRoleIdKey | quote }}
+                path: role-id
+              - key: {{ .Values.credentialStore.openbaoAppRoleSecretIdKey | quote }}
+                path: wrapped-secret-id
+        {{- if .Values.credentialStore.openbaoCaExistingSecret }}
+        - name: openbao-ca
+          secret:
+            secretName: {{ .Values.credentialStore.openbaoCaExistingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.credentialStore.openbaoCaKey | quote }}
+                path: ca.crt
+        {{- end }}
+        - name: openbao-proxy-temporary-files
+          emptyDir: {}
+        {{- end }}

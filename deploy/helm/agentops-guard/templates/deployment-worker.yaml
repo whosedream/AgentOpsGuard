@@ -12,18 +12,40 @@ spec:
       labels:
         app: agentops-guard-worker
     spec:
+      serviceAccountName: {{ required "serviceAccounts.worker is required" .Values.serviceAccounts.worker | quote }}
+      automountServiceAccountToken: false
+      {{- include "agentops-guard.podSecurityContext" . | nindent 6 }}
+      {{- if .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range .Values.image.pullSecrets }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
       containers:
         - name: worker
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "agentops-guard.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["uv", "run", "agentops-guard", "worker", "--queue", "default", "--with-scheduler"]
+          command: ["agentops-guard", "worker", "--queue", "default", "--with-scheduler"]
+          {{- include "agentops-guard.containerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: temporary-files
+              mountPath: /tmp
           envFrom:
             - configMapRef:
                 name: {{ include "agentops-guard.name" . }}-config
-            - secretRef:
-                name: {{ include "agentops-guard.name" . }}-secret
-          {{- if or .Values.opa.enabled .Values.telemetry.enabled }}
           env:
+            - name: AGENTOPS_COMPONENT
+              value: worker
+            - name: AGENTOPS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "runtimeSecret.existingSecret is required" .Values.runtimeSecret.existingSecret | quote }}
+                  key: {{ .Values.runtimeSecret.databaseUrlKey | quote }}
+            - name: AGENTOPS_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtimeSecret.existingSecret | quote }}
+                  key: {{ .Values.runtimeSecret.redisUrlKey | quote }}
             {{- if .Values.opa.enabled }}
             - name: AGENTOPS_OPA_URL
               value: "http://{{ include "agentops-guard.name" . }}-opa:8181"
@@ -31,6 +53,10 @@ spec:
               value: {{ .Values.opa.timeoutSeconds | quote }}
             - name: AGENTOPS_POLICY_FAIL_MODE
               value: {{ .Values.opa.policyFailMode | quote }}
+            {{- if .Values.opa.bundle.enabled }}
+            - name: AGENTOPS_OPA_EXPECTED_POLICY_REVISION
+              value: {{ .Values.opa.bundle.expectedPolicyRevision | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.telemetry.enabled }}
             - name: AGENTOPS_OTEL_ENABLED
@@ -42,6 +68,8 @@ spec:
             - name: AGENTOPS_OTEL_TRACE_SAMPLE_RATIO
               value: {{ .Values.telemetry.traceSampleRatio | quote }}
             {{- end }}
-          {{- end }}
           resources:
             {{- toYaml .Values.resources.worker | nindent 12 }}
+      volumes:
+        - name: temporary-files
+          emptyDir: {}

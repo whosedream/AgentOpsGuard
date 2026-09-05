@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 
 from agentops_guard.gateway.app import app
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-AgentOps-Api-Key": "dev-agentops-key"})
 
 
 def test_SPEC_MCP_002_gateway_tools_list_cors_and_demo_tool():

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "evidence": "artifacts/benchmarks/bipia_static_holdout_v1.json",
+  "baseline_uv_lock_sha256": "d08d64e32dfc4a83c4ee849bae165a5688f53b8102da10ab9e4aa01f69735554",
+  "compatible_uv_lock_sha256": "937de3efc0fa94e4e8c5288ea840af0148a5fddfe0d334277f5bc4d6b9040137",
+  "reconstructed_baseline_sha256": "d08d64e32dfc4a83c4ee849bae165a5688f53b8102da10ab9e4aa01f69735554",
+  "reason": "security_patch_only_no_scanner_or_model_dependency_change",
+  "changes": [
+    {
+      "package": "pydantic-settings",
+      "from": "2.14.0",
+      "to": "2.14.2"
+    },
+    {
+      "package": "starlette",
+      "from": "1.0.0",
+      "to": "1.3.1"
+    }
+  ]
+}

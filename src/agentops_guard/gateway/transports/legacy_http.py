@@ -11,15 +11,24 @@ class LegacyHttpTransport:
         self.timeout = timeout
 
     def list_tools(self) -> list[dict[str, Any]]:
-        response = httpx.get(f"{self.url}/tools/list", timeout=self.timeout)
-        response.raise_for_status()
-        return response.json().get("tools", [])
+        with httpx.Client(
+            timeout=self.timeout,
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            response = client.get(f"{self.url}/tools/list")
+            response.raise_for_status()
+            return response.json().get("tools", [])
 
     def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        response = httpx.post(
-            f"{self.url}/tools/call",
-            json={"name": tool_name, "arguments": arguments},
+        with httpx.Client(
             timeout=max(self.timeout, 30.0),
-        )
-        response.raise_for_status()
-        return response.json()
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            response = client.post(
+                f"{self.url}/tools/call",
+                json={"name": tool_name, "arguments": arguments},
+            )
+            response.raise_for_status()
+            return response.json()

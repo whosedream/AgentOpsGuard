@@ -1,20 +1,87 @@
 image:
   repository: agentops-guard
   tag: latest
+  digest: ""
   pullPolicy: IfNotPresent
   pullSecrets: []
+
+dashboardImage:
+  repository: agentops-guard-dashboard
+  tag: latest
+  digest: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+openbaoProxy:
+  image:
+    repository: ghcr.io/openbao/openbao
+    tag: 2.6.1
+    digest: ""
+    pullPolicy: IfNotPresent
+  port: 8100
+  resources: {}
+
+supplyChain:
+  requireImageDigests: false
+  requireImageSignatures: false
+
+imageVerification:
+  enabled: false
+  mode: enforce
+  imageGlobs: []
+  trustRootRef: ""
+  keyless:
+    issuer: ""
+    subject: ""
+    fulcioUrl: https://fulcio.sigstore.dev
+    rekorUrl: https://rekor.sigstore.dev
 
 replicaCount:
   api: 1
   gateway: 1
   worker: 1
+  outboxDispatcher: 1
   dashboard: 1
+  semanticScanner: 1
 
 service:
   apiPort: 8000
   gatewayPort: 8001
   dashboardPort: 3000
+  semanticScannerPort: 8090
   type: ClusterIP
+
+networkPolicy:
+  enabled: false
+  requireExplicitExternalEgress: false
+  ingressController:
+    namespaceSelector: {}
+    podSelector: {}
+  dns:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kube-system
+    podSelector:
+      matchLabels:
+        k8s-app: kube-dns
+  externalEgress:
+    api: []
+    gateway: []
+    worker: []
+    outboxDispatcher: []
+    auditAnchorExporter: []
+    migration: []
+
+serviceAccounts:
+  create: true
+  api: agentops-guard-api
+  gateway: agentops-guard-gateway
+  worker: agentops-guard-worker
+  outboxDispatcher: agentops-guard-outbox-dispatcher
+  dashboard: agentops-guard-dashboard
+  semanticScanner: agentops-guard-semantic-scanner
+  opa: agentops-guard-opa
+  migration: agentops-guard-migration
 
 ingress:
   enabled: false
@@ -27,11 +94,31 @@ ingress:
           pathType: Prefix
   tls: []
 
+mcp:
+  publicUrl: https://agentops.local/mcp
+  allowedHosts: agentops.local,agentops.local:*
+  allowedOrigins: https://agentops.local
+  ingressPath: /mcp
+  pageSize: 100
+
+gatewayConcurrency:
+  backend: local
+  leaseSeconds: 60
+
 resources:
   api: {}
   gateway: {}
   worker: {}
+  outboxDispatcher: {}
   dashboard: {}
+  semanticScanner:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 3Gi
+  auditAnchorExporter: {}
 
 probes:
   api:
@@ -46,14 +133,18 @@ probes:
 
 env:
   AGENTOPS_ENV: prod
-  AGENTOPS_DATABASE_URL: ""
-  AGENTOPS_REDIS_URL: ""
-  AGENTOPS_API_KEY: ""
-  AGENTOPS_OPERATOR_API_KEY: ""
   AGENTOPS_SERVER_API_URL: http://agentops-guard-api:8000
   AGENTOPS_SERVER_GATEWAY_URL: http://agentops-guard-gateway:8001
 
 extraEnv: {}
+
+runtimeSecret:
+  existingSecret: agentops-guard-runtime
+  databaseUrlKey: AGENTOPS_DATABASE_URL
+  redisUrlKey: AGENTOPS_REDIS_URL
+  apiKeyKey: AGENTOPS_API_KEY
+  operatorApiKeyKey: AGENTOPS_OPERATOR_API_KEY
+  dashboardApiKeyKey: AGENTOPS_SERVER_API_KEY
 
 credentialEncryption:
   existingSecret: ""
@@ -62,10 +153,40 @@ credentialEncryption:
 credentialStore:
   backend: fernet
   openbaoUrl: ""
+  openbaoAuthMethod: token
   openbaoExistingSecret: ""
   openbaoTokenKey: AGENTOPS_OPENBAO_TOKEN
+  openbaoAppRoleRoleId: ""
+  openbaoAppRoleRoleIdKey: role-id
+  openbaoAppRoleSecretIdKey: wrapped-secret-id
+  openbaoAppRoleSecretIdResponseWrappingPath: auth/approle/role/agentops-api/secret-id
+  openbaoAppRoleMount: approle
+  openbaoCaExistingSecret: ""
+  openbaoCaKey: ca.crt
   openbaoKvMount: secret
   openbaoTimeoutSeconds: 5
+
+auditCheckpoints:
+  backend: disabled
+  openbaoTransitMount: transit
+  keyName: agentops-audit
+
+auditAnchorExporter:
+  enabled: false
+  pollSeconds: 300
+  serviceAccountName: ""
+  databaseExistingSecret: ""
+  databaseUrlKey: AGENTOPS_DATABASE_URL
+  openbaoExistingSecret: ""
+  openbaoAppRoleRoleIdKey: role-id
+  openbaoAppRoleSecretIdKey: wrapped-secret-id
+  openbaoAppRoleSecretIdResponseWrappingPath: auth/approle/role/agentops-audit-export/secret-id
+  bucket: ""
+  prefix: agentops-audit-checkpoints
+  region: ""
+  endpointUrl: ""
+  expectedBucketOwner: ""
+  retentionDays: 2555
 
 semanticScanner:
   mode: disabled
@@ -73,15 +194,34 @@ semanticScanner:
   modelSha256: ""
   threshold: 0.90
   hostPath: ""
+  existingClaim: ""
+  timeoutSeconds: 2
+
+oidc:
+  enabled: false
+  issuer: ""
+  audience: ""
+  jwksUrl: ""
+  timeoutSeconds: 5
+  maxTokenBytes: 16384
+  maxTokenLifetimeSeconds: 900
 
 opa:
   enabled: false
   image:
     repository: openpolicyagent/opa
-    tag: 1.8.0-debug
+    tag: 1.20.1-debug
+    digest: ""
     pullPolicy: IfNotPresent
+    pullSecrets: []
   timeoutSeconds: 2
   policyFailMode: closed_for_high_risk
+  bundle:
+    enabled: false
+    existingSecret: ""
+    verificationKeyId: agentops-policy-v1
+    scope: agentops.guard
+    expectedPolicyRevision: ""
   resources: {}
 
 telemetry:

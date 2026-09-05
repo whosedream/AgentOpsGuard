@@ -1,0 +1,26 @@
+{{- if .Values.opa.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentops-guard.name" . }}-opa
+spec:
+  podSelector:
+    matchLabels:
+      app: agentops-guard-opa
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-api
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-gateway
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-worker
+      ports:
+        - protocol: TCP
+          port: 8181
+  egress: []
+{{- end }}

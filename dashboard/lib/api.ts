@@ -3,7 +3,9 @@ export {
   canAccessScanner,
   canCreateReplay,
   canManageGovernance,
+  canManageJobs,
   canManageMcp,
+  canReadJobs,
   canReadGovernance,
   canReadRawContent,
   canRunEval,
@@ -145,11 +147,48 @@ export function buildRisksQuery({
   return `/v1/risks?${params.toString()}`;
 }
 
+export function buildJobsQuery({
+  projectId = "default",
+  status = "dead",
+  cursor,
+  limit = 50,
+}: {
+  projectId?: string;
+  status?: string;
+  cursor?: string | null;
+  limit?: number;
+}): string {
+  const params = new URLSearchParams();
+  params.set("project_id", projectId);
+  params.set("limit", String(limit));
+  params.set("page_mode", "envelope");
+  appendParam(params, "cursor", cursor);
+  appendParam(params, "status", status);
+  return `/v1/jobs?${params.toString()}`;
+}
+
+export function buildExecutionsQuery({
+  projectId = "default",
+  status = "outcome_unknown",
+  limit = 50,
+}: {
+  projectId?: string;
+  status?: string;
+  limit?: number;
+}): string {
+  const params = new URLSearchParams();
+  params.set("project_id", projectId);
+  params.set("limit", String(limit));
+  params.set("page_mode", "envelope");
+  appendParam(params, "status", status);
+  return `/v1/executions?${params.toString()}`;
+}
+
 export async function pollJob(id: string, attempts = 30, delayMs = 1000): Promise<Job> {
   let latest: Job | null = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     latest = await apiGet<Job>(`/v1/jobs/${id}`);
-    if (["completed", "failed"].includes(latest.status)) return latest;
+    if (["completed", "failed", "dead"].includes(latest.status)) return latest;
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
   if (latest) return latest;
@@ -307,3 +346,42 @@ export type EvalRun = { id: string; project_id: string; suite_id?: string; statu
 export type McpServer = { id: string; project_id: string; name: string; transport: string; command?: string; args: string[]; url?: string; trust_level: string; allowed_agents: string[]; status: string; created_at: string };
 export type McpTool = { name: string; serverId?: string; server_id?: string; description?: string; riskScore?: number; risk_score?: number; riskLabels?: string[]; risk_labels?: string[]; status?: string };
 export type Job = { id: string; project_id: string; kind: string; status: string; rq_job_id?: string | null; payload: Record<string, unknown>; result?: Record<string, unknown> | null; error?: string | null; attempts: number; created_at: string; started_at?: string | null; finished_at?: string | null };
+export type JobReconciliation = {
+  project_id: string;
+  stale_pending_jobs: number;
+  expired_running_jobs: number;
+  dead_jobs: number;
+  undelivered_outbox_events: number;
+  outcome_unknown_executions: number;
+  checked_at: string;
+};
+export type ExecutionRequest = {
+  id: string;
+  project_id: string;
+  run_id?: string | null;
+  approval_id: string;
+  server_id: string;
+  tool_name: string;
+  tool_revision_id: string;
+  arguments_digest: string;
+  policy_snapshot_digest: string;
+  status: string;
+  risk_score: number;
+  risk_labels: string[];
+  expires_at: string;
+  completed_at?: string | null;
+  reconciliation_resolution?: string | null;
+  reconciliation_evidence_sha256?: string | null;
+  reconciled_by?: string | null;
+  reconciled_at?: string | null;
+  created_at: string;
+};
+export type ExecutionResolution = {
+  id: string;
+  project_id: string;
+  status: string;
+  resolution: string;
+  evidence_sha256: string;
+  reconciled_by: string;
+  reconciled_at: string;
+};

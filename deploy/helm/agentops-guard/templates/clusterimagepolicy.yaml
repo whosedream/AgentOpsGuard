@@ -1,0 +1,63 @@
+{{- if and .Values.supplyChain.requireImageSignatures (not .Values.imageVerification.enabled) -}}
+{{- fail "imageVerification.enabled is required when supplyChain.requireImageSignatures=true" -}}
+{{- end -}}
+{{- if .Values.imageVerification.enabled -}}
+{{- $mode := required "imageVerification.mode is required" .Values.imageVerification.mode -}}
+{{- if not (has $mode (list "enforce" "warn")) -}}
+{{- fail "imageVerification.mode must be enforce or warn" -}}
+{{- end -}}
+{{- if and .Values.supplyChain.requireImageSignatures (ne $mode "enforce") -}}
+{{- fail "imageVerification.mode must be enforce when image signatures are required" -}}
+{{- end -}}
+{{- if not .Values.imageVerification.imageGlobs -}}
+{{- fail "imageVerification.imageGlobs must contain at least one repository-scoped image glob" -}}
+{{- end -}}
+{{- range $glob := .Values.imageVerification.imageGlobs -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?/[a-z0-9]+([._/-][a-z0-9]+)*@sha256:\\*$" $glob) -}}
+{{- fail "each imageVerification.imageGlobs entry must identify one repository and end with @sha256:*" -}}
+{{- end -}}
+{{- end -}}
+{{- $issuer := required "imageVerification.keyless.issuer is required" .Values.imageVerification.keyless.issuer -}}
+{{- if not (regexMatch "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~!$&()*+,;=:@%/-]*)?$" $issuer) -}}
+{{- fail "imageVerification.keyless.issuer must be a credential-free HTTPS URL without query or fragment" -}}
+{{- end -}}
+{{- $subject := required "imageVerification.keyless.subject is required" .Values.imageVerification.keyless.subject -}}
+{{- if or (not (regexMatch "^[[:graph:]]+$" $subject)) (regexMatch "[?*\\[\\]{}]" $subject) -}}
+{{- fail "imageVerification.keyless.subject must be an exact non-wildcard signing identity" -}}
+{{- end -}}
+{{- $fulcio := required "imageVerification.keyless.fulcioUrl is required" .Values.imageVerification.keyless.fulcioUrl -}}
+{{- if not (regexMatch "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?$" $fulcio) -}}
+{{- fail "imageVerification.keyless.fulcioUrl must be a credential-free HTTPS base URL" -}}
+{{- end -}}
+{{- $rekor := required "imageVerification.keyless.rekorUrl is required" .Values.imageVerification.keyless.rekorUrl -}}
+{{- if not (regexMatch "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?$" $rekor) -}}
+{{- fail "imageVerification.keyless.rekorUrl must be a credential-free HTTPS base URL" -}}
+{{- end -}}
+{{- $trustRootRef := required "imageVerification.trustRootRef is required" .Values.imageVerification.trustRootRef -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" $trustRootRef) -}}
+{{- fail "imageVerification.trustRootRef must be a Kubernetes DNS-compatible TrustRoot name" -}}
+{{- end -}}
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: {{ include "agentops-guard.name" . }}-signed-images
+  labels:
+    {{- include "agentops-guard.labels" . | nindent 4 }}
+spec:
+  mode: {{ $mode }}
+  images:
+    {{- range $glob := .Values.imageVerification.imageGlobs }}
+    - glob: {{ $glob | quote }}
+    {{- end }}
+  authorities:
+    - name: approved-keyless-builder
+      keyless:
+        url: {{ $fulcio | quote }}
+        trustRootRef: {{ $trustRootRef | quote }}
+        identities:
+          - issuer: {{ $issuer | quote }}
+            subject: {{ $subject | quote }}
+      ctlog:
+        url: {{ $rekor | quote }}
+        trustRootRef: {{ $trustRootRef | quote }}
+{{- end }}

@@ -2,17 +2,44 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: agentops-guard-migration
+  labels:
+    app: agentops-guard-migration
 spec:
   template:
+    metadata:
+      labels:
+        app: agentops-guard-migration
     spec:
       restartPolicy: Never
+      serviceAccountName: {{ required "serviceAccounts.migration is required" .Values.serviceAccounts.migration | quote }}
+      automountServiceAccountToken: false
+      {{- include "agentops-guard.podSecurityContext" . | nindent 6 }}
+      {{- if .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range .Values.image.pullSecrets }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
       containers:
         - name: migration
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "agentops-guard.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["uv", "run", "alembic", "upgrade", "head"]
+          command: ["agentops-guard-migrate"]
+          {{- include "agentops-guard.containerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: temporary-files
+              mountPath: /tmp
           envFrom:
             - configMapRef:
                 name: {{ include "agentops-guard.name" . }}-config
-            - secretRef:
-                name: {{ include "agentops-guard.name" . }}-secret
+          env:
+            - name: AGENTOPS_COMPONENT
+              value: migration
+            - name: AGENTOPS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "runtimeSecret.existingSecret is required" .Values.runtimeSecret.existingSecret | quote }}
+                  key: {{ .Values.runtimeSecret.databaseUrlKey | quote }}
+      volumes:
+        - name: temporary-files
+          emptyDir: {}

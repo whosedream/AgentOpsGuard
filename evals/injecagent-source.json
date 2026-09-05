@@ -1,0 +1,32 @@
+{
+  "commit": "f19c9f2c79a41046eb13c03c51a24c567a8ffa07",
+  "files": {
+    "data/test_cases_dh_base.json": {
+      "attack_types": {
+        "Data Security Harm": 187,
+        "Financial Harm": 153,
+        "Physical Harm": 170
+      },
+      "rows": 510,
+      "sha256": "0a8186468d21389af432e8c7b399ae42264d1b93a07b65c7a489468508604305"
+    },
+    "data/test_cases_ds_base.json": {
+      "attack_types": {
+        "Financial Data": 102,
+        "Others": 255,
+        "Physical Data": 187
+      },
+      "rows": 544,
+      "sha256": "4daab35c62a3845e8b9400f4dca58b9c9f37e57cd33b2337552557fbb26282e9"
+    }
+  },
+  "license_file": {
+    "path": "LICENCE",
+    "sha256": "b48589499dbb84caa796b00b4ea652b0443e49660282c44d890fd473b8c0674e"
+  },
+  "repository": "https://github.com/uiuc-kang-lab/InjecAgent.git",
+  "upstream_evaluator": {
+    "path": "src/evaluate_prompted_agent.py",
+    "sha256": "9a866bdec0c7da0abed9c0288b0f49404e62e77b8b2b623684d743ca87dbe4ae"
+  }
+}

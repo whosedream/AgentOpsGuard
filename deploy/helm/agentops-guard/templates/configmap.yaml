@@ -8,3 +8,20 @@ data:
   AGENTOPS_ENV: {{ .Values.env.AGENTOPS_ENV | quote }}
   AGENTOPS_SERVER_API_URL: {{ .Values.env.AGENTOPS_SERVER_API_URL | quote }}
   AGENTOPS_SERVER_GATEWAY_URL: {{ .Values.env.AGENTOPS_SERVER_GATEWAY_URL | quote }}
+  AGENTOPS_MCP_PUBLIC_URL: {{ required "mcp.publicUrl is required" .Values.mcp.publicUrl | quote }}
+  AGENTOPS_MCP_ALLOWED_HOSTS: {{ required "mcp.allowedHosts is required" .Values.mcp.allowedHosts | quote }}
+  AGENTOPS_MCP_ALLOWED_ORIGINS: {{ required "mcp.allowedOrigins is required" .Values.mcp.allowedOrigins | quote }}
+  AGENTOPS_MCP_PAGE_SIZE: {{ .Values.mcp.pageSize | quote }}
+  AGENTOPS_GATEWAY_CONCURRENCY_BACKEND: {{ .Values.gatewayConcurrency.backend | quote }}
+  AGENTOPS_GATEWAY_CONCURRENCY_LEASE_SECONDS: {{ .Values.gatewayConcurrency.leaseSeconds | quote }}
+  AGENTOPS_AUDIT_CHECKPOINT_BACKEND: {{ .Values.auditCheckpoints.backend | quote }}
+  AGENTOPS_OPENBAO_TRANSIT_MOUNT: {{ .Values.auditCheckpoints.openbaoTransitMount | quote }}
+  AGENTOPS_AUDIT_CHECKPOINT_KEY_NAME: {{ .Values.auditCheckpoints.keyName | quote }}
+  {{- if .Values.oidc.enabled }}
+  AGENTOPS_OIDC_ISSUER: {{ required "oidc.issuer is required" .Values.oidc.issuer | quote }}
+  AGENTOPS_OIDC_AUDIENCE: {{ required "oidc.audience is required" .Values.oidc.audience | quote }}
+  AGENTOPS_OIDC_JWKS_URL: {{ required "oidc.jwksUrl is required" .Values.oidc.jwksUrl | quote }}
+  AGENTOPS_OIDC_TIMEOUT_SECONDS: {{ .Values.oidc.timeoutSeconds | quote }}
+  AGENTOPS_OIDC_MAX_TOKEN_BYTES: {{ .Values.oidc.maxTokenBytes | quote }}
+  AGENTOPS_OIDC_MAX_TOKEN_LIFETIME_SECONDS: {{ .Values.oidc.maxTokenLifetimeSeconds | quote }}
+  {{- end }}

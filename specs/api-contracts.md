@@ -163,7 +163,12 @@ Returns cached `McpToolOut[]`, newest first for the requested `project_id`. Each
 
 ## Scanner, Policy, Gateway
 
-Existing scanner and policy request/response contracts are unchanged. Gateway endpoints must allow browser CORS and return JSON for tools list, tool call, resource read, and prompt get.
+Existing scanner and policy request/response contracts are unchanged. Gateway endpoints must allow
+browser CORS and return JSON for tools list, tool call, resource read, and prompt get. Successful
+external-content results add a server-generated `provenance` object; list responses add it to each
+returned item. Standard MCP exposes the same object under `_meta["io.agentops/provenance"]`. Its
+schema and propagation rules are fixed in `specs/content-provenance-v1.md`; quarantined responses
+omit `contentRef`.
 
 `POST /mcp/tools/call` accepts optional `runId`. For send, write, delete, payment, and permission
 actions, the Gateway compares the tool action and target fields with the intent manifest derived
@@ -171,6 +176,15 @@ from the server-stored run input. Missing or mismatched authorization returns
 `require_approval` and does not call the upstream tool. Caller-supplied intent text is not an
 authorization source. An external tool whose action cannot be classified also requires approval;
 automatic execution requires an administrator-reviewed internal server.
+
+### POST /v1/executions/{execution_id}/resolve
+
+Requires `jobs:admin` and project access. The target must currently be `outcome_unknown`. The body
+contains `resolution` (`confirmed_succeeded`, `confirmed_failed`, or `confirmed_not_executed`) and
+`evidence_sha256` as exactly 64 lowercase hexadecimal characters. Raw evidence, notes, URLs,
+credentials, and tool arguments are not accepted. The transition and evidence digest are audited.
+Only `confirmed_not_executed` returns the request to `approved`; expiry, identity, arguments, tool
+revision, and policy revision are still rechecked, and the next claim remains atomic.
 
 
 ## Operations Hardening

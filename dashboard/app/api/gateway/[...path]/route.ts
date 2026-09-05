@@ -4,7 +4,11 @@ import { proxyJsonRequest } from "../../../../lib/proxy-server";
 
 const GATEWAY_CAPABILITIES: Record<string, string> = {
   "mcp/tools/list": "mcp:read",
-  "mcp/tools/call": "mcp:read",
+  "mcp/tools/call": "mcp:invoke",
+  "mcp/resources/list": "mcp:read",
+  "mcp/resources/read": "mcp:read",
+  "mcp/prompts/list": "mcp:read",
+  "mcp/prompts/get": "mcp:read",
 };
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
@@ -42,7 +46,12 @@ async function handleProxy(request: NextRequest, path: string[], method: string,
   const auth = (await authResponse.json()) as { capabilities?: string[]; is_operator?: boolean };
   const required = GATEWAY_CAPABILITIES[path.join("/")];
   const capabilities = auth.capabilities ?? [];
-  const allowed = auth.is_operator || !required || capabilities.includes(required) || capabilities.includes("admin:*");
+  const allowed = Boolean(required) && (
+    auth.is_operator
+    || capabilities.includes(required)
+    || capabilities.includes(`${required.split(":", 1)[0]}:*`)
+    || capabilities.includes("admin:*")
+  );
   if (!allowed) {
     return new Response(JSON.stringify({ detail: "Capability denied" }), {
       status: 403,

@@ -26,6 +26,10 @@ def test_healthz_metrics_and_readyz_contract(monkeypatch):
     assert "agentops_policy_decisions_total" in metrics.text
     assert "agentops_approvals_pending" in metrics.text
     assert "agentops_jobs_by_status_total" in metrics.text
+    assert "agentops_outbox_events_total" in metrics.text
+    assert "agentops_execution_requests_total" in metrics.text
+    assert "agentops_job_lease_recoveries_total" in metrics.text
+    assert "agentops_job_heartbeat_failures_total" in metrics.text
     ready = client.get("/readyz")
     assert ready.status_code == 200
     assert set(ready.json()) >= {"status", "database", "redis", "migration"}
@@ -42,7 +46,10 @@ def test_request_id_header_is_returned():
 def test_request_log_is_json_structured(capsys):
     response = client.get("/healthz?project_id=ops_log", headers={"X-Request-Id": "req_log_test"})
     assert response.status_code == 200
-    records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+    output = capsys.readouterr().out
+    records = [
+        json.loads(line) for line in output.splitlines() if line.startswith("{")
+    ]
     assert records
     latest = records[-1]
     assert latest["request_id"] == "req_log_test"
@@ -50,10 +57,11 @@ def test_request_log_is_json_structured(capsys):
     assert latest["path"] == "/healthz"
     assert latest["status"] == 200
     assert isinstance(latest["duration_ms"], int)
-    assert latest["project_id"] == "ops_log"
+    assert "project_id" not in latest
+    assert "ops_log" not in output
 
 
-def test_readyz_returns_503_when_redis_is_down(monkeypatch):
+def test_readyz_stays_available_with_degraded_redis(monkeypatch):
     from redis.exceptions import ConnectionError
 
     from agentops_guard.backend.api import routes_observability as routes
@@ -65,8 +73,9 @@ def test_readyz_returns_503_when_redis_is_down(monkeypatch):
     monkeypatch.setattr(routes, "redis_connection", lambda: DownRedis())
     assert client.get("/healthz").status_code == 200
     ready = client.get("/readyz")
-    assert ready.status_code == 503
-    assert ready.json()["redis"]["status"] == "error"
+    assert ready.status_code == 200
+    assert ready.json()["redis"]["status"] == "degraded"
+    assert ready.json()["redis"]["url"] is None
 
 
 def test_readyz_returns_503_on_migration_mismatch(monkeypatch):
@@ -78,7 +87,11 @@ def test_readyz_returns_503_on_migration_mismatch(monkeypatch):
             return True
 
     monkeypatch.setattr(routes, "redis_connection", lambda: HealthyRedis())
-    monkeypatch.setattr(routes, "migration_status", lambda _db: ComponentStatus(status="error", detail="migration mismatch"))
+    monkeypatch.setattr(
+        routes,
+        "migration_status",
+        lambda _db: ComponentStatus(status="error", detail="migration mismatch"),
+    )
     ready = client.get("/readyz")
     assert ready.status_code == 503
     assert ready.json()["migration"]["status"] == "error"
@@ -132,36 +145,30 @@ def test_page_mode_envelope_for_runs():
     assert len(body["items"]) == 1
 
 
-def test_redis_job_endpoint_returns_503_when_queue_unavailable(monkeypatch):
-    from agentops_guard.backend.api import routes_eval, routes_gateway_registry, routes_replay
-    from agentops_guard.backend.services.jobs import QueueUnavailable
+def test_job_endpoint_commits_to_outbox_without_contacting_redis():
+    from agentops_guard.backend.database import SessionLocal
+    from agentops_guard.backend.models import OutboxEvent
 
-    def unavailable(*_args, **_kwargs):
-        raise QueueUnavailable("down")
-
-    monkeypatch.setattr(routes_replay, "enqueue_job", unavailable)
-    monkeypatch.setattr(routes_eval, "enqueue_job", unavailable)
-    monkeypatch.setattr(routes_gateway_registry, "enqueue_job", unavailable)
-    run = client.post("/v1/runs", headers=headers, json={"project_id": "default", "name": "replay seed"}).json()
+    run = client.post(
+        "/v1/runs", headers=headers, json={"project_id": "default", "name": "replay seed"}
+    ).json()
     response = client.post(
         "/v1/replays/jobs",
         headers=headers,
         json={"project_id": "default", "source_run_id": run["id"], "mode": "exact"},
     )
-    assert response.status_code == 503
+    assert response.status_code == 200
+    assert response.json()["rq_job_id"] is None
+    db = SessionLocal()
+    try:
+        event = db.get(OutboxEvent, f"outbox_{response.json()['id']}")
+        assert event is not None
+        assert event.status == "pending"
+    finally:
+        db.close()
 
 
-def test_job_enqueue_success_paths_and_pagination(monkeypatch):
-    from agentops_guard.backend.api import routes_eval, routes_gateway_registry, routes_replay
-
-    def fake_enqueue(db, row, queue_name="default"):
-        row.rq_job_id = f"rq-{row.id}"
-        db.flush()
-        return row
-
-    monkeypatch.setattr(routes_replay, "enqueue_job", fake_enqueue)
-    monkeypatch.setattr(routes_eval, "enqueue_job", fake_enqueue)
-    monkeypatch.setattr(routes_gateway_registry, "enqueue_job", fake_enqueue)
+def test_job_outbox_creation_paths_and_pagination():
     suite = client.post(
         "/v1/eval-suites",
         headers=headers,
@@ -169,7 +176,7 @@ def test_job_enqueue_success_paths_and_pagination(monkeypatch):
     ).json()
     eval_job = client.post(f"/v1/eval-suites/{suite['id']}/jobs", headers=headers)
     assert eval_job.status_code == 200
-    assert eval_job.json()["rq_job_id"].startswith("rq-")
+    assert eval_job.json()["rq_job_id"] is None
 
     server = client.post(
         "/v1/mcp/servers",
@@ -189,9 +196,15 @@ def test_job_enqueue_success_paths_and_pagination(monkeypatch):
 
 
 def test_page_mode_envelope_for_replays_eval_runs_and_audit():
-    replay_page = client.get("/v1/replays?project_id=default&limit=1&page_mode=envelope", headers=headers)
-    eval_page = client.get("/v1/eval-runs?project_id=default&limit=1&page_mode=envelope", headers=headers)
-    audit_page = client.get("/v1/audit-logs?project_id=default&limit=1&page_mode=envelope", headers=headers)
+    replay_page = client.get(
+        "/v1/replays?project_id=default&limit=1&page_mode=envelope", headers=headers
+    )
+    eval_page = client.get(
+        "/v1/eval-runs?project_id=default&limit=1&page_mode=envelope", headers=headers
+    )
+    audit_page = client.get(
+        "/v1/audit-logs?project_id=default&limit=1&page_mode=envelope", headers=headers
+    )
     assert replay_page.status_code == 200
     assert eval_page.status_code == 200
     assert audit_page.status_code == 200
@@ -202,19 +215,25 @@ def test_page_mode_envelope_for_replays_eval_runs_and_audit():
 
 def test_job_execute_success_and_failure(monkeypatch):
     from agentops_guard.backend.database import SessionLocal
-    from agentops_guard.backend.models import BackgroundJob, McpServer, McpTool
+    from agentops_guard.backend.models import BackgroundJob, McpServer, McpTool, OutboxEvent
     from agentops_guard.backend.services import mcp_refresh
     from agentops_guard.backend.services.jobs import create_job, execute_job
 
     monkeypatch.setattr(
         mcp_refresh,
         "_load_tools_from_server",
-        lambda _server, strict=False: [{"name": "demo.echo", "description": "safe echo", "inputSchema": {"type": "object"}}],
+        lambda _server, strict=False: [
+            {"name": "demo.echo", "description": "safe echo", "inputSchema": {"type": "object"}}
+        ],
     )
 
     db = SessionLocal()
     try:
-        db.merge(McpServer(id="demo", project_id="default", name="demo", transport="stdio", status="active"))
+        db.merge(
+            McpServer(
+                id="demo", project_id="default", name="demo", transport="stdio", status="active"
+            )
+        )
         success = create_job(db, "default", "mcp_refresh", {"server_id": "demo"})
         failing = create_job(db, "default", "unknown", {})
         db.commit()
@@ -223,6 +242,7 @@ def test_job_execute_success_and_failure(monkeypatch):
     finally:
         db.close()
 
+    assert execute_job(success_id)["status"] == "completed"
     assert execute_job(success_id)["status"] == "completed"
     db = SessionLocal()
     try:
@@ -242,7 +262,10 @@ def test_job_execute_success_and_failure(monkeypatch):
     db = SessionLocal()
     try:
         row = db.get(BackgroundJob, failing_id)
-        assert row.status == "failed"
-        assert "Unsupported job kind" in row.error
+        assert row.status == "pending"
+        assert row.error == "job_execution_failed"
+        assert row.lease_owner is None
+        assert row.lease_expires_at is None
+        assert db.get(OutboxEvent, f"outbox_retry_{failing_id}_1") is not None
     finally:
         db.close()

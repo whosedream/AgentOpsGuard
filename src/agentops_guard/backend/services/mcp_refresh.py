@@ -9,6 +9,7 @@ from agentops_guard.backend.services.scanner import (
     scan_content,
     should_quarantine_external_content,
 )
+from agentops_guard.backend.services.mcp_tool_revisions import record_tool_revision
 from agentops_guard.gateway.app import _load_tools_from_server
 
 
@@ -49,6 +50,8 @@ def refresh_mcp_tools(db: Session, server_id: str) -> dict[str, object]:
             row.risk_score = scan.risk_score
             row.risk_labels = scan.risk_labels
             row.status = status
+            db.flush()
+            record_tool_revision(db, server, row, source=tool)
             refreshed += 1
         if server.status == "error":
             server.status = "active"
@@ -70,7 +73,10 @@ def refresh_mcp_tools(db: Session, server_id: str) -> dict[str, object]:
             action="mcp_server.refresh_failed",
             resource_type="mcp_server",
             resource_id=server.id,
-            after={"error": str(exc)},
+            after={
+                "error_code": "mcp_refresh_failed",
+                "error_type": type(exc).__name__,
+            },
         )
         db.flush()
         raise

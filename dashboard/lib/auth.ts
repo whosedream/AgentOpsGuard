@@ -38,7 +38,7 @@ export function canManageMcp(auth: AuthContext): boolean {
 }
 
 export function canTestMcp(auth: AuthContext): boolean {
-  return hasCapability(auth, "mcp:read");
+  return hasCapability(auth, "mcp:invoke");
 }
 
 export function canAccessScanner(auth: AuthContext): boolean {
@@ -51,6 +51,14 @@ export function canAccessPolicy(auth: AuthContext): boolean {
 
 export function canReadRawContent(auth: AuthContext): boolean {
   return hasCapability(auth, "raw_content:read");
+}
+
+export function canReadJobs(auth: AuthContext): boolean {
+  return hasCapability(auth, "jobs:read");
+}
+
+export function canManageJobs(auth: AuthContext): boolean {
+  return hasCapability(auth, "jobs:admin");
 }
 
 export function canCreateReplay(auth: AuthContext): boolean {
