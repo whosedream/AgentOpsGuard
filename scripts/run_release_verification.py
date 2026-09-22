@@ -27,6 +27,11 @@ BENCHMARK_ARTIFACTS = (
     "agentdojo_static_blind_v1.json",
     "agentdojo_static_regression_v2.json",
     "agentdojo_static_regression_v3.json",
+    "agentdojo_static_regression_v4.json",
+    "boundary-quality-v1/boundary_pairs_en_test_v1.json",
+    "boundary-quality-v1/chinese_boundary_diagnostic_v1.json",
+    "boundary-quality-v1/managed_scanner_regression_v1.json",
+    "boundary-quality-v1/managed_scanner_source_slices_v2.json",
     "bipia_protectai_candidate_regression_v1.json",
     "bipia_static_holdout_v1.json",
     "bipia_windowing_calibration_v1.json",
@@ -50,6 +55,7 @@ EVALUATION_ARTIFACTS = (
     "agent_threat_bench_gateway_v4.json",
     "agent_threat_bench_gateway_v5.json",
     "agent_threat_bench_gateway_v6.json",
+    "agent_threat_bench_gateway_v7.json",
     "agentdojo_template_dynamic_gateway_v1.json",
     "agentdojo_template_dynamic_gateway_v2.json",
     "agentdojo_template_dynamic_gateway_v3.json",
@@ -58,6 +64,7 @@ EVALUATION_ARTIFACTS = (
     "agentdojo_template_dynamic_gateway_v8.json",
     "agentdojo_template_dynamic_gateway_v9.json",
     "agentdojo_template_dynamic_gateway_v10.json",
+    "agentdojo_template_dynamic_gateway_v11.json",
     "qwen3_4b_q4_k_m_agent_smoke_v2.json",
 )
 
@@ -346,6 +353,12 @@ UNVERIFIED_GATES = (
     "unknown_attack_agent_end_to_end_evaluation",
 )
 
+# Passing regression checks does not override failed load and quality acceptance.
+FAILED_ACCEPTANCE_GATES = (
+    "single_host_full_security_path_fault_soak",
+    "bilingual_attack_and_hard_negative_detection_quality",
+)
+
 
 def _safe_environment() -> dict[str, str]:
     """Give verification tools only process settings, never application credentials."""
@@ -517,6 +530,8 @@ def build_report(checks: list[dict[str, object]]) -> dict[str, object]:
         "evaluation_artifacts": evaluation_evidence(),
         "supply_chain_artifacts": supply_chain_evidence(),
         "unverified_gates": list(UNVERIFIED_GATES),
+        "failed_acceptance_gates": list(FAILED_ACCEPTANCE_GATES),
+        "acceptance_result": "failed" if FAILED_ACCEPTANCE_GATES else "unverified",
         "privacy": {
             "captures_command_output": False,
             "captures_environment_values": False,

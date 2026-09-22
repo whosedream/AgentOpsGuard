@@ -382,13 +382,16 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
     if semantic_scanner is not None:
         try:
             semantic_assessment = semantic_scanner.assess(request)
-        except SemanticScannerUnavailable:
+        except SemanticScannerUnavailable as exc:
             if semantic_scanner.mode == "enforce":
                 raise
             semantic_assessment = SemanticAssessment(
                 status="error",
                 mode="shadow",
                 model=SEMANTIC_MODEL_ID,
+                error_reason=exc.reason,
+                attempts=exc.attempts,
+                attempt_errors=list(exc.attempt_errors),
             )
         if (
             semantic_assessment is not None
@@ -445,7 +448,7 @@ def scan_content(request: ScanRequest, db: Session | None = None) -> ScanRespons
                         risk_type="semantic_scanner_error",
                         severity="medium",
                         score=0.0,
-                        labels=["semantic_scanner_error"],
+                        labels=["semantic_scanner_error", f"semantic_error:{semantic_assessment.error_reason}"],
                         evidence=[],
                         description=(
                             f"Semantic scanner was unavailable for {request.source} content."

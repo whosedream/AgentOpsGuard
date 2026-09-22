@@ -1,3 +1,4 @@
+import anyio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -22,6 +23,10 @@ class ScoreResponse(BaseModel):
 
 
 app = FastAPI(title="AgentOps Guard Semantic Scorer")
+# Readiness can initialize/verify model assets, so keep that work off the event
+# loop without making probes queue behind the scoring thread pool. This limit
+# does not add inference capacity or cache a previous readiness result.
+_readiness_limiter = anyio.CapacityLimiter(1)
 
 
 @app.exception_handler(RequestValidationError)
@@ -30,18 +35,22 @@ async def validation_error(_request: Request, _error: RequestValidationError) ->
 
 
 @app.get("/healthz")
-def healthz() -> dict[str, str]:
+async def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
 @app.get("/readyz")
-def readyz() -> dict[str, str]:
-    scanner = _local_scanner()
+async def readyz() -> dict[str, str]:
+    await anyio.to_thread.run_sync(_check_ready, limiter=_readiness_limiter)
+    return {"status": "ok"}
+
+
+def _check_ready() -> None:
     try:
+        scanner = _local_scanner()
         scanner.warm()
     except SemanticScannerUnavailable as exc:
-        raise HTTPException(503, "Semantic model unavailable") from exc
-    return {"status": "ok"}
+        raise HTTPException(503, {"code": exc.reason}) from exc
 
 
 @app.post("/v1/score", response_model=ScoreResponse)
@@ -50,7 +59,7 @@ def score(payload: ScoreRequest) -> ScoreResponse:
     try:
         assessment = scanner.assess(ScanRequest(content=payload.text, source="external"))
     except SemanticScannerUnavailable as exc:
-        raise HTTPException(503, "Semantic model unavailable") from exc
+        raise HTTPException(503, {"code": exc.reason}) from exc
     if assessment is None or assessment.score is None:
         raise HTTPException(503, "Semantic model unavailable")
     return ScoreResponse(score=assessment.score, model=assessment.model)

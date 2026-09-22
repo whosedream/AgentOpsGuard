@@ -22,7 +22,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: {{ include "agentops-guard.name" $ }}-gateway
+                name: {{ include "agentops-guard.name" $ }}-{{ ternary "gateway-proxy" "gateway" $.Values.gatewayProxy.enabled }}
                 port:
                   number: {{ $.Values.service.gatewayPort }}
           {{- range .paths }}

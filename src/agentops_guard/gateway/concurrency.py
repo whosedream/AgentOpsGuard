@@ -95,6 +95,11 @@ def _redis_server_call_slot(
     acquired = False
     try:
         while True:
+            # A scheduler pause during the wait must not turn an expired
+            # reservation request into a new tool dispatch. Zero wait still
+            # means one immediate acquisition attempt.
+            if wait_seconds > 0 and time.monotonic() >= deadline:
+                raise GatewayCapacityExceeded("MCP server capacity exceeded")
             try:
                 acquired = bool(
                     connection.eval(
@@ -112,6 +117,10 @@ def _redis_server_call_slot(
                     "Distributed capacity store is unavailable"
                 ) from exc
             if acquired:
+                if wait_seconds > 0 and time.monotonic() >= deadline:
+                    # The store may have answered after our wait expired. The
+                    # finally block returns this reservation without yielding.
+                    raise GatewayCapacityExceeded("MCP server capacity exceeded")
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:

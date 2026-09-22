@@ -9,6 +9,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
 
 from agentops_guard.backend.telemetry import inject_trace_headers
+from agentops_guard.gateway.transports.errors import UpstreamTransportError
 
 
 class StreamableHttpTransport:
@@ -22,7 +23,13 @@ class StreamableHttpTransport:
         return anyio.run(self._list_tools)
 
     def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        return anyio.run(self._call_tool, tool_name, arguments)
+        try:
+            return anyio.run(self._call_tool, tool_name, arguments)
+        except* (TimeoutError, httpx2.HTTPError, MCPError) as errors:
+            # One task group can contain both the timeout and a connection-close
+            # error. Normalize them together, without masking unrelated bugs.
+            timed_out = errors.subgroup((TimeoutError, httpx2.TimeoutException))
+            raise UpstreamTransportError("timeout" if timed_out else "http_error") from None
 
     def list_resources(self) -> list[dict[str, Any]]:
         return anyio.run(self._list_resources)
@@ -84,9 +91,13 @@ class StreamableHttpTransport:
                     return tools
 
     async def _call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        async with self._session() as session:
-            result = await session.call_tool(tool_name, arguments)
-            return _json_value(result)
+        # One deadline includes connection, MCP initialization and the tool call.
+        # Cancellation closes this client's transport before its caller frees capacity.
+        # It is not evidence that a remote side effect was rolled back.
+        with anyio.fail_after(self.timeout):
+            async with self._session() as session:
+                result = await session.call_tool(tool_name, arguments)
+                return _json_value(result)
 
     async def _list_resources(self) -> list[dict[str, Any]]:
         resources: list[dict[str, Any]] = []

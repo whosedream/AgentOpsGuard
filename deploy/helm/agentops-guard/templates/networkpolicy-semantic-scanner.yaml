@@ -13,6 +13,9 @@ spec:
         - podSelector:
             matchLabels:
               app: agentops-guard-gateway
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-worker
       ports:
         - protocol: TCP
           port: {{ .Values.service.semanticScannerPort }}

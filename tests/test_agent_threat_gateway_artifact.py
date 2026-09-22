@@ -30,7 +30,7 @@ def test_historical_failures_remain_explicit_and_immutable():
 
 
 def test_current_report_has_no_raw_case_or_model_content():
-    report = _load(6)
+    report = _load(7)
 
     verifier._assert_dataset(report)
     verifier._assert_privacy_boundaries(report)

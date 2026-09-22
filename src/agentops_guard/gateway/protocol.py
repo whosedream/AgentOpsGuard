@@ -26,6 +26,7 @@ from starlette.applications import Starlette
 from agentops_guard.backend.auth import authenticate_bearer_token
 from agentops_guard.backend.config import Settings
 from agentops_guard.backend.database import SessionLocal
+from agentops_guard.backend.database_resilience import PostToolDatabaseUnavailable, database_http_boundary
 from agentops_guard.backend.services.content_provenance import (
     strip_untrusted_agentops_metadata,
 )
@@ -86,7 +87,8 @@ class AgentOpsTokenVerifier:
             finally:
                 db.close()
 
-        return await anyio.to_thread.run_sync(verify)
+        with database_http_boundary():
+            return await anyio.to_thread.run_sync(verify)
 
 
 def create_standard_mcp_gateway(settings: Settings) -> tuple[Server[Any], Starlette]:
@@ -244,6 +246,7 @@ async def _call_tool(
             "upstreamError",
             "approvalRequestId",
             "executionRequestId",
+            "invocation",
         )
         if result.get(key) is not None
     }
@@ -587,8 +590,12 @@ async def _call_gateway(handler_name: str, **kwargs: Any) -> dict[str, Any]:
             db.close()
 
     try:
-        return await anyio.to_thread.run_sync(call)
+        with database_http_boundary():
+            return await anyio.to_thread.run_sync(call)
     except HTTPException as exc:
+        if isinstance(exc, PostToolDatabaseUnavailable):
+            raise MCPError(-32053, "Tool output withheld: post-execution database unavailable",
+                           data=exc.detail) from None
         if exc.status_code in {401, 403}:
             raise MCPError(-32003, "Access denied") from None
         if exc.status_code == 404:
@@ -597,6 +604,8 @@ async def _call_gateway(handler_name: str, **kwargs: Any) -> dict[str, Any]:
             raise MCPError(-32009, "Request conflict") from None
         if exc.status_code == 429:
             raise MCPError(-32029, "Capacity exceeded") from None
+        if exc.status_code == 503:
+            raise MCPError(-32053, "Service temporarily unavailable") from None
         raise MCPError(-32000, "Request rejected") from None
 
 
@@ -762,6 +771,7 @@ def _request_metadata(meta: dict[str, Any] | None) -> dict[str, str]:
     for wire_name, payload_name in (
         ("runId", "runId"),
         ("idempotencyKey", "idempotencyKey"),
+        ("requestId", "requestId"),
     ):
         value = raw.get(wire_name)
         if value is not None:

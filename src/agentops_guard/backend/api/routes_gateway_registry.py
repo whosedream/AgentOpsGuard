@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
 
 from agentops_guard.backend.auth import (
     AuthContext,
@@ -22,9 +24,58 @@ from agentops_guard.backend.services.audit import record_audit
 from agentops_guard.backend.services.content import new_id
 from agentops_guard.backend.services.jobs import create_job
 from agentops_guard.backend.services.projects import ensure_project
+from agentops_guard.backend.services.tool_receipts import ReceiptContract, validate_contract
 
 
 v1_router = APIRouter()
+
+
+class ToolExecutionPolicyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: str
+    revision_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    queue_enabled: bool = False
+    retry_mode: Literal["never", "read_only"] = "never"
+    evidence_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    receipt_contract: ReceiptContract | None = None
+
+
+@v1_router.put("/mcp/tools/{tool_id}/execution-policy",
+               dependencies=[Depends(require_scope("mcp:admin"))])
+def configure_tool_execution_policy(
+    tool_id: str, payload: ToolExecutionPolicyUpdate, request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    from datetime import UTC, datetime
+    from agentops_guard.backend.models import ToolExecutionPolicy
+    from agentops_guard.backend.services.tool_invocations import current_revision
+
+    auth = get_auth_context(request)
+    authorize_project_access(auth, payload.project_id, db=db)
+    revision = current_revision(db, payload.project_id, tool_id)
+    if revision.content_digest != payload.revision_digest:
+        raise HTTPException(409, "Review must match the current tool revision")
+    if payload.receipt_contract is not None:
+        if payload.retry_mode != "never":
+            raise HTTPException(400, "Receipt-enabled tools must query, never automatically replay")
+        validate_contract(db, payload.project_id, tool_id, payload.receipt_contract)
+    row = db.get(ToolExecutionPolicy, tool_id)
+    if row is None:
+        row = ToolExecutionPolicy(tool_id=tool_id, project_id=payload.project_id)
+        db.add(row)
+    row.revision_digest = payload.revision_digest
+    row.queue_enabled = payload.queue_enabled
+    row.retry_mode = payload.retry_mode
+    row.evidence_sha256 = payload.evidence_sha256
+    row.receipt_contract = (
+        payload.receipt_contract.model_dump() if payload.receipt_contract else None
+    )
+    row.updated_by = auth.actor_id or auth.kind
+    row.updated_at = datetime.now(UTC)
+    record_audit(db, project_id=payload.project_id, action="mcp_tool.execution_policy_reviewed",
+                 resource_type="mcp_tool", resource_id=tool_id, after=payload.model_dump())
+    db.commit()
+    return {"tool_id": tool_id, **payload.model_dump()}
 
 
 @v1_router.post(

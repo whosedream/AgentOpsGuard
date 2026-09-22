@@ -1,12 +1,15 @@
 from datetime import UTC, datetime, timedelta
 from threading import Event, Thread
 from typing import Any
+import re
+from uuid import uuid4
 
 from redis import Redis
 from redis.exceptions import RedisError
-from rq import Queue, get_current_job
+from rq import Queue
 from rq.exceptions import DuplicateJobError, NoSuchJobError
 from rq.job import Job as RqJob
+from sqlalchemy import case
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -40,11 +43,15 @@ class JobLeaseLost(RuntimeError):
 MAX_JOB_ATTEMPTS = 3
 JOB_LEASE_SECONDS = 660
 JOB_HEARTBEAT_SECONDS = 60.0
+TOOL_JOB_LEASE_SECONDS = 30
+TOOL_JOB_HEARTBEAT_SECONDS = 5.0
+MISSING_DELIVERY_GRACE_SECONDS = 30
 RETRYABLE_JOB_KINDS = {"eval_run", "mcp_refresh", "replay"}
 
 
-def redis_connection() -> Redis:
-    return Redis.from_url(get_settings().redis_url)
+def redis_connection(*, bounded: bool = False) -> Redis:
+    limits = {"socket_connect_timeout": 2, "socket_timeout": 2} if bounded else {}
+    return Redis.from_url(get_settings().redis_url, **limits)
 
 
 def assert_redis_available() -> None:
@@ -55,11 +62,21 @@ def assert_redis_available() -> None:
 
 
 def create_job(db: Session, project_id: str, kind: str, payload: dict[str, Any]) -> BackgroundJob:
+    if kind == "tool_invocation":
+        # Generated IDs can contain digit runs resembling phone numbers. Keep
+        # this typed ID intact; never allow tool arguments into this envelope.
+        invocation_id = payload.get("invocation_id")
+        if (set(payload) != {"invocation_id"} or not isinstance(invocation_id, str)
+                or re.fullmatch(r"inv_[0-9a-f]{24}", invocation_id) is None):
+            raise ValueError("Tool invocation job accepts only a generated invocation ID")
+        safe_payload = dict(payload)
+    else:
+        safe_payload = redact_value(payload)
     row = BackgroundJob(
         id=new_id("job"),
         project_id=project_id,
         kind=kind,
-        payload=redact_value(payload),
+        payload=safe_payload,
     )
     db.add(row)
     db.add(
@@ -179,8 +196,8 @@ def execute_job(job_id: str) -> dict[str, Any]:
             raise ValueError(f"Job not found: {job_id}")
         if row.status == "completed":
             return row.result or {}
-        current_rq_job = get_current_job()
-        claimant = current_rq_job.id if current_rq_job is not None else "direct-executor"
+        # A redelivered RQ job is not the same worker lease generation.
+        claimant = "worker_" + uuid4().hex
         claimed = claim_background_job(db, job_id=job_id, claimant=claimant)
         db.commit()
         if not claimed:
@@ -192,22 +209,33 @@ def execute_job(job_id: str) -> dict[str, Any]:
         db.expire_all()
         row = db.get(BackgroundJob, job_id)
         assert row is not None
-        stop_heartbeat, lease_lost, heartbeat = _start_job_heartbeat(job_id, claimant)
+        stop_heartbeat, lease_lost, heartbeat = _start_job_heartbeat(
+            job_id, claimant,
+            interval=TOOL_JOB_HEARTBEAT_SECONDS if row.kind == "tool_invocation" else None,
+        )
         completed = False
         failure_code = "job_execution_failed"
         try:
-            result = _execute_payload(db, row)
+            result = _execute_payload(db, row, claimant=claimant)
             stop_heartbeat.set()
             heartbeat.join(timeout=5)
             if heartbeat.is_alive() or lease_lost.is_set():
                 failure_code = "worker_lease_lost"
                 raise JobLeaseLost("Background job lease was lost")
-            row.status = "completed"
-            row.result = result
-            row.error = None
-            row.lease_owner = None
-            row.lease_expires_at = None
-            row.finished_at = datetime.now(UTC)
+            # A heartbeat check alone leaves a race with recovery. The final
+            # write must still belong to the same live execution generation.
+            changed = db.query(BackgroundJob).filter(
+                BackgroundJob.id == job_id,
+                BackgroundJob.status == "running",
+                BackgroundJob.lease_owner == claimant,
+                BackgroundJob.lease_expires_at > datetime.now(UTC),
+            ).update({
+                "status": "completed", "result": result, "error": None,
+                "lease_owner": None, "lease_expires_at": None,
+                "finished_at": datetime.now(UTC),
+            }, synchronize_session=False)
+            if changed != 1:
+                raise JobLeaseLost("Background execution ownership lost before completion")
             db.commit()
             completed = True
             return result
@@ -216,7 +244,7 @@ def execute_job(job_id: str) -> dict[str, Any]:
             heartbeat.join(timeout=5)
             if not completed:
                 db.rollback()
-                row = db.get(BackgroundJob, job_id)
+                row = db.query(BackgroundJob).filter_by(id=job_id).with_for_update().populate_existing().one_or_none()
                 if row is not None and row.status == "running" and row.lease_owner == claimant:
                     _mark_job_for_retry_or_dead(db, row, failure_code)
                     db.commit()
@@ -238,7 +266,10 @@ def claim_background_job(db: Session, *, job_id: str, claimant: str) -> bool:
                 BackgroundJob.attempts: BackgroundJob.attempts + 1,
                 BackgroundJob.started_at: now,
                 BackgroundJob.lease_owner: claimant,
-                BackgroundJob.lease_expires_at: now + timedelta(seconds=JOB_LEASE_SECONDS),
+                BackgroundJob.lease_expires_at: case(
+                    (BackgroundJob.kind == "tool_invocation", now + timedelta(seconds=TOOL_JOB_LEASE_SECONDS)),
+                    else_=now + timedelta(seconds=JOB_LEASE_SECONDS),
+                ),
             },
             synchronize_session=False,
         )
@@ -258,8 +289,10 @@ def renew_background_job_lease(db: Session, *, job_id: str, claimant: str) -> bo
         )
         .update(
             {
-                BackgroundJob.lease_expires_at: now
-                + timedelta(seconds=JOB_LEASE_SECONDS),
+                BackgroundJob.lease_expires_at: case(
+                    (BackgroundJob.kind == "tool_invocation", now + timedelta(seconds=TOOL_JOB_LEASE_SECONDS)),
+                    else_=now + timedelta(seconds=JOB_LEASE_SECONDS),
+                ),
             },
             synchronize_session=False,
         )
@@ -267,12 +300,12 @@ def renew_background_job_lease(db: Session, *, job_id: str, claimant: str) -> bo
     return renewed == 1
 
 
-def _start_job_heartbeat(job_id: str, claimant: str) -> tuple[Event, Event, Thread]:
+def _start_job_heartbeat(job_id: str, claimant: str, *, interval: float | None = None) -> tuple[Event, Event, Thread]:
     stop = Event()
     lease_lost = Event()
 
     def heartbeat_loop() -> None:
-        while not stop.wait(JOB_HEARTBEAT_SECONDS):
+        while not stop.wait(JOB_HEARTBEAT_SECONDS if interval is None else interval):
             heartbeat_db = SessionLocal()
             try:
                 if not renew_background_job_lease(
@@ -313,6 +346,77 @@ def reconcile_background_job_leases(db: Session) -> int:
         JOB_LEASE_RECOVERIES_COUNTER.labels(outcome=row.status).inc()
     db.flush()
     return len(rows)
+
+
+def reconcile_missing_tool_deliveries(
+    db: Session, *, limit: int = 50, after_id: str | None = None,
+) -> tuple[int, str | None]:
+    """Repair lost queue notifications, not external tool executions.
+
+    Redis is only a wake-up mechanism. A duplicate wake-up must still acquire
+    the database job and invocation execution claims.
+    """
+    cutoff = datetime.now(UTC) - timedelta(seconds=MISSING_DELIVERY_GRACE_SECONDS)
+    query = db.query(BackgroundJob).filter(
+        BackgroundJob.kind == "tool_invocation",
+        BackgroundJob.status == "pending",
+        BackgroundJob.created_at < cutoff,
+    )
+    if after_id is not None:
+        query = query.filter(BackgroundJob.id > after_id)
+    rows = query.order_by(BackgroundJob.id).limit(limit).with_for_update(skip_locked=True).all()
+    repaired = 0
+    for row in rows:
+        events = db.query(OutboxEvent).filter(
+            OutboxEvent.payload["job_id"].as_string() == row.id,
+        )
+        if events.filter(OutboxEvent.status.in_(["pending", "dispatching"])).first():
+            continue
+        event = events.filter(OutboxEvent.status == "delivered").order_by(
+            OutboxEvent.delivered_at.desc()
+        ).first()
+        if event is None or event.delivered_at is None:
+            continue
+        delivered_at = event.delivered_at
+        if delivered_at.tzinfo is None:
+            delivered_at = delivered_at.replace(tzinfo=UTC)
+        if delivered_at >= cutoff:
+            continue
+        queue_name = str(event.payload["queue_name"])
+        connection = redis_connection(bounded=True)
+        try:
+            queue = Queue(queue_name, connection=connection)
+            rq_job = queue.fetch_job(row.rq_job_id) if row.rq_job_id else None
+            if rq_job is not None:
+                # Use the same fetched snapshot for status and start time.
+                status = rq_job.get_status(refresh=False).value
+                if status in {"deferred", "scheduled"}:
+                    continue
+                if status == "queued" and connection.lpos(queue.key, rq_job.id) is not None:
+                    continue
+                if status == "started" and rq_job.started_at is not None:
+                    started_at = rq_job.started_at
+                    if started_at.tzinfo is None:
+                        started_at = started_at.replace(tzinfo=UTC)
+                    # RQ dequeues before the child claims the database job.
+                    # An old delivery does not mean this new start was lost.
+                    if started_at >= cutoff:
+                        continue
+        except RedisError:
+            # Unreachable is not the same as missing. Do not turn a Redis
+            # outage into an unbounded collection of replacement events.
+            break
+        db.add(OutboxEvent(
+            id=new_id("outbox"), project_id=row.project_id,
+            topic="background_job.redelivery",
+            payload={"job_id": row.id, "queue_name": queue_name},
+            status="pending", available_at=datetime.now(UTC),
+        ))
+        db.flush()
+        repaired += 1
+    # The caller cycles this read cursor; healthy old backlog must not starve
+    # lost notifications later in the table. It is not a correctness token.
+    return repaired, rows[-1].id if len(rows) == limit else None
 
 
 def background_job_reconciliation(
@@ -377,7 +481,11 @@ def retry_dead_job(db: Session, row: BackgroundJob) -> BackgroundJob:
     return retried
 
 
-def _execute_payload(db: Session, row: BackgroundJob) -> dict[str, Any]:
+def _execute_payload(db: Session, row: BackgroundJob, *, claimant: str) -> dict[str, Any]:
+    if row.kind == "tool_invocation":
+        from agentops_guard.backend.services.tool_invocations import execute_queued
+
+        return execute_queued(db, row, claimant=claimant)
     if row.kind == "replay":
         replay = create_replay(db, ReplayCreate(**row.payload))
         db.flush()
@@ -405,6 +513,17 @@ def _mark_job_for_retry_or_dead(
     row: BackgroundJob,
     error_code: str,
 ) -> None:
+    if row.kind == "tool_invocation":
+        from agentops_guard.backend.services.tool_invocations import recover_job_invocation
+        terminal = recover_job_invocation(db, row, exhausted=row.attempts >= MAX_JOB_ATTEMPTS)
+        if terminal is not None:
+            row.status = "completed"
+            row.result = terminal
+            row.error = error_code
+            row.lease_owner = None
+            row.lease_expires_at = None
+            row.finished_at = datetime.now(UTC)
+            return
     row.lease_owner = None
     row.lease_expires_at = None
     row.result = None

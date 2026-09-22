@@ -8,7 +8,8 @@ import uvicorn
 import yaml
 from redis.exceptions import RedisError
 from rich import print
-from rq import Queue, Worker
+from rq import Queue
+from sqlalchemy.exc import DBAPIError, TimeoutError as DatabaseTimeoutError
 
 from agentops_guard.backend.database import SessionLocal, init_db
 from agentops_guard.backend.schemas import EvalRunCreate, EvalSuiteCreate
@@ -20,6 +21,7 @@ from agentops_guard.backend.services.jobs import (
     redis_connection,
 )
 from agentops_guard.backend.telemetry import configure_telemetry
+from agentops_guard.backend.worker import DatabaseSafeWorker
 
 app = typer.Typer(help="AgentOps Guard developer CLI")
 
@@ -112,7 +114,7 @@ def worker(queue: str = "default", burst: bool = False, with_scheduler: bool = F
         connection.ping()
     except RedisError as exc:
         raise typer.Exit("Redis queue unavailable") from exc
-    worker_instance = Worker([Queue(queue, connection=connection)], connection=connection)
+    worker_instance = DatabaseSafeWorker([Queue(queue, connection=connection)], connection=connection)
     worker_instance.work(burst=burst, with_scheduler=with_scheduler)
 
 
@@ -123,16 +125,57 @@ def outbox_dispatcher(
     poll_seconds: float = 1.0,
 ) -> None:
     """Reliably deliver committed background jobs to Redis/RQ."""
+    from agentops_guard.backend.database_resilience import database_unavailable
+    from agentops_guard.backend.services.tool_invocations import reconcile_invocations
+    from agentops_guard.backend.services.jobs import reconcile_missing_tool_deliveries
+
     init_db()
+    delivery_cursor = None
     while True:
         db = SessionLocal()
         try:
             reconcile_execution_leases(db)
             reconcile_background_job_leases(db)
+            reconcile_invocations(db)
+            _, next_cursor = reconcile_missing_tool_deliveries(db, after_id=delivery_cursor)
             db.commit()
+            delivery_cursor = next_cursor
             dispatch_outbox_batch(db, dispatcher_id=dispatcher_id)
+        except (DBAPIError, DatabaseTimeoutError) as error:
+            db.rollback()
+            if once or not database_unavailable(error):
+                raise
+            # Retry delivery after failover, never the external action itself.
+            print("Outbox database unavailable; committed tasks remain pending.")
         finally:
             db.close()
+        if once:
+            return
+        time.sleep(poll_seconds)
+
+
+@app.command("receipt-reconciler")
+def receipt_reconciler(once: bool = False, poll_seconds: float = 10.0) -> None:
+    """Query reviewed downstream receipts in a separate bounded worker; never replay tools."""
+    from agentops_guard.backend.database_resilience import database_unavailable
+    from agentops_guard.backend.services.tool_receipts import reconcile_batch
+
+    if poll_seconds < 1:
+        raise typer.BadParameter("poll-seconds must be at least 1")
+    init_db()
+    cursor = None
+    while True:
+        with SessionLocal() as db:
+            try:
+                counts, cursor = reconcile_batch(db, after_id=cursor)
+                db.commit()
+                if counts["queried"]:
+                    print(counts)
+            except (DBAPIError, DatabaseTimeoutError) as error:
+                db.rollback()
+                if once or not database_unavailable(error):
+                    raise
+                print("Receipt database unavailable; no external actions replayed.")
         if once:
             return
         time.sleep(poll_seconds)

@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 import sys
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -109,10 +109,10 @@ def test_remote_semantic_scanner_sends_only_bounded_redacted_text(monkeypatch):
         captured["text"] = payload["text"]
         return httpx.Response(200, json={"score": 0.97, "model": SEMANTIC_MODEL_ID})
 
-    original_client = httpx.Client
+    original_client = httpx.AsyncClient
     monkeypatch.setattr(
         semantic_service.httpx,
-        "Client",
+        "AsyncClient",
         lambda **_kwargs: original_client(transport=httpx.MockTransport(handler)),
     )
     semantic = RemoteSemanticScanner("http://semantic.test", "shadow", 0.9, 1.0)
@@ -507,15 +507,130 @@ def test_transformers_backend_loads_only_local_reviewed_code(
     assert max(batch_sizes) <= MODEL_BATCH_SIZE
 
 
-def test_transformers_backend_rejects_concurrent_inference_without_waiting():
+def test_transformers_backend_wait_is_bounded_and_returns_capacity(monkeypatch):
     backend = object.__new__(TransformersSemanticBackend)
     backend._inference_lock = Lock()
+    backend._inference_slots = BoundedSemaphore(9)
     backend._inference_lock.acquire()
+    monkeypatch.setattr(semantic_service, "INFERENCE_QUEUE_WAIT_SECONDS", 0.01)
 
-    with pytest.raises(SemanticScannerUnavailable, match="busy"):
+    with pytest.raises(SemanticScannerUnavailable, match="wait expired") as error:
         backend.predict("external content")
-
+    assert error.value.reason == "queue_timeout"
     backend._inference_lock.release()
+    backend._predict_locked = lambda text: 0.1
+    assert backend.predict("retry") == 0.1
+
+
+def test_transformers_backend_serializes_short_burst_without_dropping_scores():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    import time
+
+    backend = object.__new__(TransformersSemanticBackend)
+    backend._inference_lock = Lock()
+    backend._inference_slots = BoundedSemaphore(9)
+    entered = Lock()
+    barrier = Barrier(8)
+
+    def predict_locked(_text):
+        assert entered.acquire(blocking=False)
+        try:
+            time.sleep(0.002)
+            return 0.4
+        finally:
+            entered.release()
+
+    backend._predict_locked = predict_locked
+
+    def predict(_index):
+        barrier.wait(timeout=5)
+        return backend.predict("external content")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert list(pool.map(predict, range(8))) == [0.4] * 8
+
+
+def test_transformers_backend_full_queue_rejects_and_exception_releases_slots():
+    backend = object.__new__(TransformersSemanticBackend)
+    backend._inference_lock = Lock()
+    backend._inference_slots = BoundedSemaphore(1)
+    backend._inference_slots.acquire()
+    with pytest.raises(SemanticScannerUnavailable) as error:
+        backend.predict("external content")
+    assert error.value.reason == "overloaded"
+    backend._inference_slots.release()
+
+    def fail(_text):
+        raise ValueError("fixed failure")
+
+    backend._predict_locked = fail
+    with pytest.raises(ValueError, match="fixed failure"):
+        backend.predict("external content")
+    backend._predict_locked = lambda text: 0.1
+    assert backend.predict("external content") == 0.1
+
+
+def test_semantic_warm_does_not_contend_with_every_readiness_probe(tmp_path):
+    backend = FakeBackend()
+    semantic = _semantic_scanner(tmp_path, backend)
+    semantic.warm()
+    semantic.warm()
+    assert backend.inputs == ["health check"]
+
+
+def test_semantic_warm_failure_can_be_retried(tmp_path):
+    backend = FakeBackend(fail=True)
+    semantic = _semantic_scanner(tmp_path, backend)
+    with pytest.raises(SemanticScannerUnavailable) as error:
+        semantic.warm()
+    assert error.value.reason == "warmup_failed"
+    backend.fail = False
+    semantic.warm()
+    assert len(backend.inputs) == 2
+
+
+def test_remote_semantic_failure_code_survives_without_error_content(monkeypatch):
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(semantic_service.httpx, "AsyncClient", lambda **kwargs:
+        original_client(transport=httpx.MockTransport(lambda request:
+            httpx.Response(503, json={"detail": {"code": "queue_timeout"}}))))
+    remote = RemoteSemanticScanner("http://semantic.test", "shadow", 0.9, 1)
+    with pytest.raises(SemanticScannerUnavailable) as error:
+        remote.assess(ScanRequest(content="external content", source="external"))
+    assert error.value.reason == "queue_timeout"
+
+
+def test_queue_error_classification_is_persisted_without_exception_text(tmp_path, monkeypatch):
+    class BusyBackend:
+        def predict(self, _text):
+            raise SemanticScannerUnavailable(SECRET, reason="queue_timeout")
+
+    semantic = _semantic_scanner(tmp_path, BusyBackend())
+    monkeypatch.setattr(scanner_service, "get_semantic_scanner", lambda: semantic)
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        response = scanner_service.scan_content(ScanRequest(project_id="queue-error", content="external content", source="external"), db)
+        db.flush()
+        event = db.query(RiskEvent).filter_by(risk_type="semantic_scanner_error").one()
+        assert response.semantic_assessment.error_reason == "queue_timeout"
+        assert event.labels == ["semantic_scanner_error", "semantic_error:queue_timeout"]
+        assert SECRET not in event.description
+        assert SECRET not in response.model_dump_json()
+    engine.dispose()
+
+
+@pytest.mark.parametrize("detail", ["private backend failure", {"code": "unknown_failure"}, {"code": []}])
+def test_remote_error_only_accepts_reviewed_error_codes(monkeypatch, detail):
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(semantic_service.httpx, "AsyncClient", lambda **kwargs:
+        original_client(transport=httpx.MockTransport(lambda request:
+            httpx.Response(503, json={"detail": detail}))))
+    remote = RemoteSemanticScanner("http://semantic.test", "shadow", 0.9, 1)
+    with pytest.raises(SemanticScannerUnavailable) as error:
+        remote.assess(ScanRequest(content="external content", source="external"))
+    assert error.value.reason == "unavailable"
 
 
 def test_long_input_tail_is_scanned_in_a_later_window(tmp_path: Path):
@@ -600,13 +715,71 @@ def test_readiness_warms_model_only_once(tmp_path: Path, monkeypatch):
     backend = FakeBackend()
     semantic = _semantic_scanner(tmp_path, backend)
     monkeypatch.setattr(semantic_service, "get_semantic_scanner", lambda: semantic)
-    semantic_service.semantic_scanner_ready.cache_clear()
 
     assert semantic_service.semantic_scanner_ready() is True
     assert semantic_service.semantic_scanner_ready() is True
 
     assert backend.inputs == ["health check"]
-    semantic_service.semantic_scanner_ready.cache_clear()
+
+
+def test_concurrent_cold_start_loads_one_backend(tmp_path: Path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    import time
+
+    semantic = _semantic_scanner(tmp_path, FakeBackend())
+    calls = []
+    barrier = Barrier(8)
+
+    def factory(_path):
+        calls.append(1)
+        time.sleep(0.05)
+        return FakeBackend()
+
+    semantic._backend_factory = factory
+
+    def access(_index):
+        barrier.wait(timeout=5)
+        return semantic.backend
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        backends = list(pool.map(access, range(8)))
+    assert len(calls) == 1
+    assert all(backend is backends[0] for backend in backends)
+
+
+def test_concurrent_scanner_lookup_constructs_once(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from types import SimpleNamespace
+    import time
+
+    calls = []
+    barrier = Barrier(8)
+
+    def construct(*_args):
+        calls.append(1)
+        time.sleep(0.05)
+        return object()
+
+    monkeypatch.setattr(semantic_service, "SemanticScanner", construct)
+    monkeypatch.setattr(semantic_service, "get_settings", lambda: SimpleNamespace(
+        semantic_scanner_mode="shadow", semantic_service_url=None,
+        semantic_model_path=tmp_path, semantic_model_sha256="0" * 64,
+        semantic_scanner_threshold=0.9))
+    semantic_service._cached_semantic_scanner.cache_clear()
+
+    def lookup(_index):
+        barrier.wait(timeout=5)
+        return semantic_service.get_semantic_scanner()
+
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            instances = list(pool.map(lookup, range(8)))
+        assert len(calls) == 1
+        assert all(instance is instances[0] for instance in instances)
+    finally:
+        semantic_service._cached_semantic_scanner.cache_clear()
 
 
 def test_frozen_blind_fixture_identity_and_shape():

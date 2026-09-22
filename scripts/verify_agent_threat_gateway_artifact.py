@@ -28,6 +28,7 @@ REPORTS = {
     4: ("5a9a5f7f23e1d67b42462098e04c495640a34761e6d40b9ad4f4ea5fc668f94c"),
     5: ("c217948dccdb0c36743662341aae52a535c488e069ff9ed7db5ef444047ca1c1"),
     6: "03f0957215edc0ef834000081d4956f6fc62b7ec988cb48c20e71a30b6d9aec7",
+    7: "6b070a76c9a6e57a76a0c79df50400fb941b8a9fea51fb24bb4b86b7114b3388",
 }
 CORPUS_SHA256 = "d9792b283faa78b33e9b6a81c86e2f84e0eccc02c70f21aa70361287cb7cb7aa"
 MODEL = Path("/home/hzj/models/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf")
@@ -222,7 +223,7 @@ def main() -> int:
         reports[version] = json.loads(path.read_text(encoding="utf-8"))
         _assert_dataset(reports[version])
     _assert_historical_failures(reports)
-    current = reports[6]
+    current = reports[7]
     _assert_privacy_boundaries(current)
     _assert_source_and_model(current, distribution)
     _assert_current(current)

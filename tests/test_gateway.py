@@ -122,6 +122,41 @@ def test_gateway_health_and_model_readiness_endpoints():
     assert client.get("/readyz").json() == {"status": "ready"}
 
 
+@pytest.mark.parametrize("tool_error", [False, True, None])
+def test_post_tool_database_failure_preserves_observed_outcome_without_output_or_retry(monkeypatch, tool_error):
+    import psycopg
+    from sqlalchemy import exc
+
+    project_id, server_id = "post_tool_" + uuid4().hex, "server_" + uuid4().hex
+    add_server(project_id, server_id)
+    calls = []
+    original_scan = gateway_module.scan_content
+
+    def upstream(*args):
+        calls.append(1)
+        result = {"isError": bool(tool_error), "content": [{"type": "text", "text": "unscanned-private-result"}]}
+        if tool_error is None:
+            result["upstreamError"] = {"code": "timeout"}
+        return result
+
+    def fail_post_scan(request, db):
+        if request.source == "mcp_tool_result":
+            raise exc.OperationalError("private SQL", {}, psycopg.OperationalError("private endpoint"))
+        return original_scan(request, db)
+
+    monkeypatch.setattr(gateway_module, "_call_upstream_tool", upstream)
+    monkeypatch.setattr(gateway_module, "scan_content", fail_post_scan)
+    response = client.post(f"/mcp/tools/call?project_id={project_id}", json={
+        "serverId": server_id, "name": "demo.echo", "arguments": {"text": "hello"}})
+    assert response.status_code == 503
+    assert response.json() == {"detail": {"code": "post_tool_database_unavailable", "tool_execution": {
+        "state": "outcome_unknown" if tool_error is None else "response_received",
+        "tool_reported_error": tool_error, "result_released": False, "automatic_retry_allowed": False}}}
+    assert "Retry-After" not in response.headers
+    assert "private" not in response.text
+    assert calls == [1]
+
+
 def test_gateway_readiness_fails_when_isolated_semantic_service_is_unavailable(monkeypatch):
     monkeypatch.setattr(
         gateway_module,

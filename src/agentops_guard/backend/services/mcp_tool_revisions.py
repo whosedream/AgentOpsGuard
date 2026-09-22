@@ -5,6 +5,8 @@ import unicodedata
 from typing import Any
 
 import rfc8785
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from agentops_guard.backend.models import McpServer, McpTool, McpToolRevision
@@ -59,16 +61,20 @@ def record_tool_revision(
         "scanner_version": SCANNER_VERSION,
     }
     digest = content_digest(revision_value)
-    existing = (
+    revisions = (
         db.query(McpToolRevision)
         .filter(
             McpToolRevision.tool_id == tool.id,
             McpToolRevision.content_digest == digest,
         )
-        .one_or_none()
     )
+    existing = revisions.one_or_none()
     if existing is None:
-        existing = McpToolRevision(
+        dialect = db.get_bind().dialect.name
+        if dialect not in {"postgresql", "sqlite"}:
+            raise ValueError("tool revision storage supports PostgreSQL and SQLite")
+        insert = postgresql_insert if dialect == "postgresql" else sqlite_insert
+        statement = insert(McpToolRevision).values(
             id=f"toolrev_{digest[:48]}",
             project_id=tool.project_id,
             tool_id=tool.id,
@@ -83,8 +89,12 @@ def record_tool_revision(
             status=tool.status,
             scanner_version=SCANNER_VERSION,
         )
-        db.add(existing)
-        db.flush()
+        # Another gateway may publish this revision after our SELECT. Only the
+        # same primary-key conflict is harmless: never update an immutable row
+        # or roll back the caller's policy/audit transaction. DML also preserves
+        # rollback semantics with SQLite's legacy transaction control.
+        db.execute(statement.on_conflict_do_nothing(index_elements=["id"]))
+        existing = revisions.one()  # Reject an ID collision with a different tool/digest.
     tool.current_revision_id = existing.id
     return existing
 

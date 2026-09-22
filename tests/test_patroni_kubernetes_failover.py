@@ -5,6 +5,9 @@ import hashlib
 from pathlib import Path
 import sys
 
+import pytest
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "verify_patroni_kubernetes_failover.py"
@@ -52,6 +55,30 @@ def test_patroni_policy_requires_synchronous_three_member_failover():
     assert dcs["synchronous_mode"] is True
     assert dcs["synchronous_mode_strict"] is True
     assert dcs["synchronous_node_count"] == 1
+
+
+@pytest.mark.parametrize('profile,expected', [
+    ('conservative', (20, 5, 5)), ('responsive', (20, 2, 3)),
+])
+def test_timing_profiles_keep_supported_minima_and_strict_durability(profile, expected):
+    config = verifier._patroni_config(timing_profile=profile)['bootstrap']['dcs']
+    assert (config['ttl'], config['loop_wait'], config['retry_timeout']) == expected
+    assert config['ttl'] >= 20 and config['loop_wait'] >= 1 and config['retry_timeout'] >= 3
+    assert config['loop_wait'] + 2 * config['retry_timeout'] <= config['ttl']
+    assert config['synchronous_mode'] is True and config['synchronous_mode_strict'] is True
+    assert config['maximum_lag_on_failover'] == 0 and config['synchronous_node_count'] == 1
+    documents = verifier._cluster_documents('review', 'generated-one', 'generated-two', timing_profile=profile)
+    stored = next(d for d in documents if d['kind'] == 'ConfigMap')['data']['patroni.yml']
+    assert yaml.safe_load(stored)['bootstrap']['dcs'] == config
+
+
+def test_timing_profile_does_not_mutate_default_and_rejects_unknown_name():
+    selected = verifier._patroni_config(timing_profile='responsive')
+    selected['bootstrap']['dcs']['ttl'] = 1
+    assert verifier._patroni_config()['bootstrap']['dcs']['ttl'] == 20
+    assert verifier._patroni_config()['bootstrap']['dcs']['loop_wait'] == 5
+    with pytest.raises(ValueError, match='timing profile'):
+        verifier._patroni_config(timing_profile='unsupported')
 
 
 def test_patroni_manifest_keeps_secrets_and_permissions_narrow():

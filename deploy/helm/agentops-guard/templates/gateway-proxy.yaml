@@ -1,0 +1,262 @@
+{{- if .Values.gatewayProxy.enabled }}
+{{- $proxy := .Values.gatewayProxy }}
+{{- if or (lt (int $proxy.semanticQueueTimeoutMs) 50) (gt (int $proxy.semanticQueueTimeoutMs) 1000) }}
+{{- fail "gatewayProxy.semanticQueueTimeoutMs must be between 50 and 1000" }}
+{{- end }}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $proxy.image) }}
+{{- fail "gatewayProxy.image must be pinned by sha256 digest" }}
+{{- end }}
+{{- $backends := list (dict "name" "gateway" "app" "agentops-guard-gateway" "port" 8001 "listen" .Values.service.gatewayPort "healthPath" "/readyz") }}
+{{- if ne .Values.semanticScanner.mode "disabled" }}
+{{- $backends = append $backends (dict "name" "semantic" "app" "agentops-guard-semantic-scanner" "port" .Values.service.semanticScannerPort "listen" .Values.service.semanticScannerPort "healthPath" "/readyz") }}
+{{- end }}
+{{- if .Values.opa.enabled }}
+{{- $backends = append $backends (dict "name" "opa" "app" "agentops-guard-opa" "port" 8181 "listen" 8181 "healthPath" "/health") }}
+{{- end }}
+{{- $names := list "gateway" "semantic" "opa" }}
+{{- $ports := list (int .Values.service.gatewayPort) (int .Values.service.semanticScannerPort) 8181 8404 }}
+{{- range $upstream := $proxy.upstreams }}
+{{- if or (not (regexMatch "^[a-z][a-z0-9-]*$" $upstream.name)) (has $upstream.name $names) (not (regexMatch "^[a-z][a-z0-9-]*$" $upstream.app)) (has (int $upstream.port) $ports) (lt (int $upstream.port) 1024) (gt (int $upstream.port) 65535) (not (regexMatch "^(/[a-zA-Z0-9_/?=&.-]*)?$" $upstream.healthPath)) }}
+{{- fail "gatewayProxy upstream requires unique name/port, exact app label and a safe health path" }}
+{{- end }}
+{{- $names = append $names $upstream.name }}
+{{- $ports = append $ports (int $upstream.port) }}
+{{- $backends = append $backends (dict "name" $upstream.name "app" $upstream.app "port" $upstream.port "listen" $upstream.port "healthPath" $upstream.healthPath) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentops-guard-gateway-proxy
+data:
+  haproxy.cfg: |
+    global
+      maxconn 1024
+      log stdout format raw local0
+      stats socket /tmp/haproxy.sock mode 600 level user
+    defaults
+      mode http
+      timeout connect {{ $proxy.connectTimeout }}
+      timeout client {{ $proxy.clientTimeout }}
+      timeout server {{ $proxy.serverTimeout }}
+      timeout http-request 5s
+      timeout http-keep-alive 5s
+      timeout check {{ $proxy.healthTimeout }}
+      timeout queue 200ms
+      # Never replay tools/call, including after a response or connection loss.
+      retries 0
+      option http-server-close
+    resolvers kube
+      parse-resolv-conf
+      accepted_payload_size 8192
+      resolve_retries 2
+      timeout resolve 1s
+      timeout retry 1s
+      hold valid 1s
+      hold obsolete 1s
+      hold nx 1s
+      hold timeout 1s
+      hold refused 1s
+      hold other 1s
+    frontend probe
+      bind :8404
+      stats enable
+      stats uri /stats
+      http-request return status 200 if { path /healthz }
+      http-request return status 200 if { path /readyz } { nbsrv(gateway) gt 0 }
+      http-request return status 503 unless { path_beg /stats }
+    {{- range $backend := $backends }}
+    frontend {{ $backend.name }}_entry
+      bind :{{ $backend.listen }}
+      {{- if eq $backend.name "semantic" }}
+      # Fixed timings/status only: never log URLs, headers, IDs or model input.
+      log global
+      log-format "SCORING_PROXY status=%ST termination=%ts queue_ms=%Tw connect_ms=%Tc response_ms=%Tr total_ms=%Ta"
+      http-request set-log-level silent if { path /readyz }
+      # Readiness uses active per-replica probes, not the inference work queue.
+      http-request return status 200 if { path /readyz } { nbsrv(semantic) gt 0 }
+      http-request return status 503 if { path /readyz }
+      {{- end }}
+      default_backend {{ $backend.name }}
+    backend {{ $backend.name }}
+      balance leastconn
+      {{- if eq $backend.name "semantic" }}
+      timeout queue {{ $proxy.semanticQueueTimeoutMs }}ms
+      # Distinguish proxy-generated failures from the model's own error codes.
+      http-error status 503 content-type application/json lf-string '{"detail":{"code":"proxy_unavailable","termination":"%ts"}}'
+      {{- end }}
+      {{- if $backend.healthPath }}
+      option httpchk GET {{ $backend.healthPath }}
+      http-check expect status 200
+      {{- end }}
+      # A failed probe stops NEW traffic. Do not kill in-flight tool requests on
+      # a transient dependency/probe failure; their existing deadlines still apply.
+      default-server inter {{ $proxy.healthInterval }} fastinter {{ $proxy.healthInterval }} downinter 1s fall {{ $proxy.healthFall }} rise 2 resolvers kube init-addr none resolve-prefer ipv4
+      server-template replica 1-{{ $proxy.serverSlots }} agentops-guard-proxy-{{ $backend.name }}.{{ $.Release.Namespace }}.svc.cluster.local:{{ $backend.port }} check{{ if eq $backend.name "semantic" }} maxconn 1 maxqueue 2{{ end }}
+    {{- end }}
+---
+{{- if .Values.serviceAccounts.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $proxy.serviceAccount }}
+automountServiceAccountToken: false
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentops-guard-gateway-proxy
+spec:
+  replicas: {{ $proxy.replicas }}
+  selector:
+    matchLabels: {app: agentops-guard-gateway-proxy}
+  template:
+    metadata:
+      labels: {app: agentops-guard-gateway-proxy}
+      annotations:
+        checksum/config: {{ toYaml .Values | sha256sum }}
+    spec:
+      serviceAccountName: {{ $proxy.serviceAccount }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: {app: agentops-guard-gateway-proxy}
+      containers:
+        - name: proxy
+          image: {{ $proxy.image | quote }}
+          imagePullPolicy: {{ $proxy.pullPolicy }}
+          command: [haproxy, -W, -db, -f, /etc/haproxy/haproxy.cfg]
+          {{- include "agentops-guard.containerSecurityContext" . | nindent 10 }}
+          resources:
+            {{- toYaml $proxy.resources | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/haproxy, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+          startupProbe:
+            httpGet: {path: /healthz, port: 8404}
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            # Dependencies must be reachable while gateway readiness is warming;
+            # otherwise gateway -> model proxy -> gateway readiness deadlocks.
+            httpGet: {path: /healthz, port: 8404}
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8404}
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap: {name: agentops-guard-gateway-proxy}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentops-guard-gateway-proxy
+spec:
+  selector: {app: agentops-guard-gateway-proxy}
+  ports:
+    {{- range $backends }}
+    - {name: {{ .name }}, port: {{ .listen }}, targetPort: {{ .listen }}}
+    {{- end }}
+{{- range $backends }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentops-guard-proxy-{{ .name }}
+spec:
+  clusterIP: None
+  selector: {app: {{ .app }}}
+  ports:
+    - {name: http, port: {{ .port }}, targetPort: {{ .port }}}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentops-guard-gateway-proxy
+spec:
+  podSelector:
+    matchLabels: {app: agentops-guard-gateway-proxy}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.ingressController.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.ingressController.podSelector | nindent 12 }}
+      ports:
+        - {protocol: TCP, port: {{ .Values.service.gatewayPort }}}
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: app, operator: In, values: [agentops-guard-gateway, agentops-guard-api, agentops-guard-worker]}
+      ports:
+        {{- range $backends }}
+        - {protocol: TCP, port: {{ .listen }}}
+        {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.dns.podSelector | nindent 12 }}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    {{- range $backends }}
+    - to:
+        - podSelector:
+            matchLabels: {app: {{ .app }}}
+      ports: [{protocol: TCP, port: {{ .port }}}]
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentops-guard-proxy-client-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app, operator: In, values: [agentops-guard-gateway, agentops-guard-api, agentops-guard-worker]}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app: agentops-guard-gateway-proxy}
+      ports:
+        {{- range $backends }}
+        - {protocol: TCP, port: {{ .listen }}}
+        {{- end }}
+{{- end }}
+{{- range $backends }}
+{{- if or $.Values.networkPolicy.enabled (has .name (list "semantic" "opa")) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentops-guard-proxy-{{ .name }}-ingress
+spec:
+  podSelector:
+    matchLabels: {app: {{ .app }}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: agentops-guard-gateway-proxy}
+      ports: [{protocol: TCP, port: {{ .port }}}]
+{{- end }}
+{{- end }}
+{{- end }}

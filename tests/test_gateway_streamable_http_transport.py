@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import os
 import subprocess
 import sys
 import time
@@ -27,6 +28,7 @@ def standard_mcp_server(tmp_path: Path):
         f"""
 from mcp.server import MCPServer
 from mcp.types import Completion, PromptReference, ResourceTemplateReference
+import anyio
 
 mcp = MCPServer("transport-test")
 
@@ -34,6 +36,11 @@ mcp = MCPServer("transport-test")
 def echo(text: str) -> str:
     \"\"\"Return the supplied text.\"\"\"
     return text
+
+@mcp.tool()
+async def slow_probe() -> str:
+    await anyio.sleep(2)
+    return "done"
 
 @mcp.resource("demo://status")
 def status() -> str:
@@ -87,10 +94,15 @@ mcp.run(
         process.terminate()
         raise AssertionError("standard MCP test server did not start")
 
-    yield f"http://127.0.0.1:{port}/mcp"
-
-    process.terminate()
-    process.wait(timeout=5)
+    try:
+        yield f"http://127.0.0.1:{port}/mcp"
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
 
 
 def test_streamable_http_transport_supports_standard_mcp_capabilities(
@@ -133,6 +145,25 @@ def test_streamable_http_transport_supports_standard_mcp_capabilities(
         {},
     )
     assert resource_completion["completion"]["values"] == ["record-1"]
+
+
+@pytest.mark.parametrize("capacity_backend", ["local", "redis"])
+def test_live_mcp_timeout_releases_capacity_after_transport_unwinds(standard_mcp_server, capacity_backend):
+    from agentops_guard.gateway.concurrency import server_call_slot
+    from agentops_guard.gateway.transports.errors import UpstreamTransportError
+
+    redis_url = os.environ.get("AGENTOPS_TEST_REDIS_URL")
+    if capacity_backend == "redis" and not redis_url:
+        pytest.skip("Set AGENTOPS_TEST_REDIS_URL for explicit Redis integration")
+    capacity = {"limit": 1, "wait_seconds": 0, "backend": capacity_backend, "redis_url": redis_url}
+    started = time.monotonic()
+    with pytest.raises(UpstreamTransportError, match="timeout"):
+        with server_call_slot("deadline-probe", **capacity):
+            StreamableHttpTransport(standard_mcp_server, timeout=0.3).call_tool("slow_probe", {})
+    assert time.monotonic() - started < 1.5
+    with server_call_slot("deadline-probe", **capacity):
+        result = StreamableHttpTransport(standard_mcp_server, timeout=2).call_tool("echo", {"text": "recovered"})
+    assert result["content"][0]["text"] == "recovered"
 
 
 def test_gateway_proxies_standard_mcp_without_bypassing_scanning(

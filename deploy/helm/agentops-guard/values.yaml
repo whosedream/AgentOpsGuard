@@ -104,6 +104,35 @@ mcp:
 gatewayConcurrency:
   backend: local
   leaseSeconds: 60
+  maxPerServer: 1
+  waitSeconds: 1
+
+# The tool deadline must leave time for post-call scanning before the client
+# deadline. No proxy layer retries a request with an unknown remote outcome.
+gatewayCallTimeoutSeconds: 10
+
+gatewayProxy:
+  enabled: false
+  replicas: 2
+  image: haproxy:3.0-alpine@sha256:34cc7d1f6142464d7d2b73e2a1eef7392556dbf304160aef543e513cfd9e5162
+  pullPolicy: IfNotPresent
+  serviceAccount: agentops-guard-gateway-proxy
+  serverSlots: 16
+  connectTimeout: 500ms
+  serverTimeout: 15s
+  clientTimeout: 20s
+  healthInterval: 500ms
+  healthTimeout: 500ms
+  healthFall: 2
+  # Let one long inference finish within the existing 2 s scoring deadline.
+  # Only the scoring backend changes; tool retries and queue limits do not.
+  semanticQueueTimeoutMs: 1000
+  # Same-namespace, operator-reviewed MCP services only. No arbitrary URLs.
+  # Example: [{name: upstream, app: upstream, port: 8091, healthPath: ""}]
+  upstreams: []
+  resources:
+    requests: {cpu: 100m, memory: 64Mi}
+    limits: {cpu: "1", memory: 128Mi}
 
 resources:
   api: {}
@@ -138,6 +167,15 @@ env:
 
 extraEnv: {}
 
+# These bound individual database waits, not a whole business transaction.
+# Transaction/tool actions are never automatically replayed after a disconnect.
+databaseResilience:
+  connectTimeoutSeconds: 2
+  poolTimeoutSeconds: 1
+  statementTimeoutMs: 3000
+  lockTimeoutMs: 1000
+  tcpUserTimeoutMs: 3000
+
 runtimeSecret:
   existingSecret: agentops-guard-runtime
   databaseUrlKey: AGENTOPS_DATABASE_URL
@@ -149,6 +187,12 @@ runtimeSecret:
 credentialEncryption:
   existingSecret: ""
   key: AGENTOPS_CREDENTIAL_ENCRYPTION_KEY
+
+# Optional. A DIFFERENT Fernet key shared only by gateway and worker.
+# Without this, synchronous receipts work but queue admission returns 503.
+invocationEncryption:
+  existingSecret: ""
+  key: AGENTOPS_INVOCATION_ENCRYPTION_KEY
 
 credentialStore:
   backend: fernet

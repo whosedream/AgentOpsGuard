@@ -1,0 +1,11 @@
+# Reuse the previously measured environment only when its dependency lock is
+# byte-identical. The controller verifies the base image ID before this build.
+FROM agentops-multinode-candidate:20260906-network-pool1
+RUN python -c "import hashlib; from pathlib import Path; assert hashlib.sha256(Path('/app/uv.lock').read_bytes()).hexdigest() == '8f0e2324370fcf9b27b1a6cec9e5718c512c47231d26be6a0b7cdf90fc38a969'; assert hashlib.sha256(Path('/app/pyproject.toml').read_bytes()).hexdigest() == '49944070940287800b58d29054560f21f2848171a090dc4973191b3a99c5d417'"
+COPY src /app/src
+COPY policies /app/policies
+COPY alembic /app/alembic
+COPY README.md alembic.ini pyproject.toml uv.lock /app/
+COPY --from=probe_runtime runtime.py /app/eval_runtime.py
+COPY --from=receipt_fixture receipt_mcp_server.py /app/receipt_mcp_server.py
+RUN python -c "from agentops_guard.backend.models import ToolInvocation; import eval_runtime; assert ToolInvocation.__tablename__ == 'tool_invocations'"

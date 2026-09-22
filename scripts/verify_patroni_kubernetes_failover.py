@@ -135,7 +135,15 @@ def _stop_process(process: subprocess.Popen[bytes] | None) -> None:
         process.wait(timeout=5)
 
 
-def _patroni_config() -> dict[str, Any]:
+PATRONI_TIMING_PROFILES = {
+    "conservative": {"ttl": 20, "loop_wait": 5, "retry_timeout": 5},
+    "responsive": {"ttl": 20, "loop_wait": 2, "retry_timeout": 3},
+}
+
+
+def _patroni_config(*, timing_profile: str = "conservative", failsafe_mode: bool = False) -> dict[str, Any]:
+    if timing_profile not in PATRONI_TIMING_PROFILES:
+        raise ValueError("unknown Patroni timing profile")
     return {
         "scope": CLUSTER_NAME,
         "kubernetes": {
@@ -160,9 +168,8 @@ def _patroni_config() -> dict[str, Any]:
         },
         "bootstrap": {
             "dcs": {
-                "ttl": 20,
-                "loop_wait": 5,
-                "retry_timeout": 5,
+                **PATRONI_TIMING_PROFILES[timing_profile],
+                "failsafe_mode": failsafe_mode,
                 "maximum_lag_on_failover": 0,
                 "synchronous_mode": True,
                 "synchronous_mode_strict": True,
@@ -201,7 +208,8 @@ def _namespace(namespace: str) -> dict[str, Any]:
 
 
 def _cluster_documents(
-    namespace: str, superuser_password: str, replication_password: str
+    namespace: str, superuser_password: str, replication_password: str,
+    *, timing_profile: str = "conservative", failsafe_mode: bool = False,
 ) -> list[dict[str, Any]]:
     labels = {"application": "patroni", "cluster-name": CLUSTER_NAME}
     pod_security_context = {
@@ -221,7 +229,8 @@ def _cluster_documents(
             "apiVersion": "v1",
             "kind": "ConfigMap",
             "metadata": {"name": f"{CLUSTER_NAME}-config", "namespace": namespace},
-            "data": {"patroni.yml": yaml.safe_dump(_patroni_config(), sort_keys=True)},
+            "data": {"patroni.yml": yaml.safe_dump(_patroni_config(
+                timing_profile=timing_profile, failsafe_mode=failsafe_mode), sort_keys=True)},
         },
         {
             "apiVersion": "v1",

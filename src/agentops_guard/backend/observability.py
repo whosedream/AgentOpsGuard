@@ -89,6 +89,16 @@ JOB_HEARTBEAT_FAILURES_COUNTER = Counter(
     ("reason",),
     registry=PROMETHEUS_REGISTRY,
 )
+SEMANTIC_SCORING_FAILURES_COUNTER = Counter(
+    "agentops_semantic_scoring_failures_total",
+    "Scoring failures including failures recovered by a bounded retry",
+    ("reason",), registry=PROMETHEUS_REGISTRY,
+)
+SEMANTIC_SCORING_REQUESTS_COUNTER = Counter(
+    "agentops_semantic_scoring_requests_total",
+    "Remote scoring requests by final outcome (ok, recovered, error)",
+    ("outcome",), registry=PROMETHEUS_REGISTRY,
+)
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):

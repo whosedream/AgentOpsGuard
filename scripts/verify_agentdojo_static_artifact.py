@@ -17,8 +17,10 @@ HISTORICAL_REPORT_SHA256 = (
 )
 PREVIOUS_REPORT = ROOT / "artifacts" / "benchmarks" / "agentdojo_static_regression_v2.json"
 PREVIOUS_REPORT_SHA256 = "1afe3eefc629c48a3b75de57207bf86a783c5019c23dc966bd2c34731248f4fb"
-CURRENT_REPORT = ROOT / "artifacts" / "benchmarks" / "agentdojo_static_regression_v3.json"
-CURRENT_REPORT_SHA256 = "f40f7e552e33a110d953f447ee9c930dc1c6c6e3e06db82fed05b989258118d8"
+BEFORE_INITIALIZATION_FIX_REPORT = ROOT / "artifacts" / "benchmarks" / "agentdojo_static_regression_v3.json"
+BEFORE_INITIALIZATION_FIX_SHA256 = "f40f7e552e33a110d953f447ee9c930dc1c6c6e3e06db82fed05b989258118d8"
+CURRENT_REPORT = ROOT / "artifacts" / "benchmarks" / "agentdojo_static_regression_v4.json"
+CURRENT_REPORT_SHA256 = "6df6338592a84724887a017a694961ac10b98f579ad037f7bbb84c2fdd3068aa"
 EVAL_PYTHON = ROOT / "evals" / "inspect" / ".venv" / "bin" / "python"
 EXPORTER = ROOT / "evals" / "inspect" / "export_agentdojo_static_cases.py"
 CORPUS_SHA256 = "b9e626a936311cd2cf0ec250aeea8f0f1e885a64beb2bd1ec1829359ba744c73"
@@ -81,6 +83,10 @@ def main() -> int:
         raise RuntimeError("AgentDojo static previous report SHA-256 changed")
     previous = json.loads(PREVIOUS_REPORT.read_text(encoding="utf-8"))
     _assert_dataset_and_results(previous)
+
+    if _sha256(BEFORE_INITIALIZATION_FIX_REPORT) != BEFORE_INITIALIZATION_FIX_SHA256:
+        raise RuntimeError("AgentDojo pre-initialization-fix report SHA-256 changed")
+    _assert_dataset_and_results(json.loads(BEFORE_INITIALIZATION_FIX_REPORT.read_text(encoding="utf-8")))
 
     if _sha256(CURRENT_REPORT) != CURRENT_REPORT_SHA256:
         raise RuntimeError("AgentDojo static current report SHA-256 changed")

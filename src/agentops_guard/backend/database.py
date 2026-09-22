@@ -2,10 +2,11 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from threading import Lock
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from agentops_guard.backend.config import get_settings
+from agentops_guard.backend.database_resilience import create_database_engine, database_http_boundary
 from agentops_guard.backend.services.migrations import migration_status
 
 
@@ -14,8 +15,7 @@ class Base(DeclarativeBase):
 
 
 settings = get_settings()
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, connect_args=connect_args, future=True)
+engine = create_database_engine(settings)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
 _bootstrap_lock = Lock()
 _schema_initialized = False
@@ -27,10 +27,11 @@ def utcnow() -> datetime:
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    with database_http_boundary():
+        try:
+            yield db
+        finally:
+            db.close()
 
 
 def init_db() -> None:
@@ -78,6 +79,19 @@ def _should_bootstrap_schema(runtime_settings) -> bool:
 def _apply_dev_bootstrap_fixes() -> None:
     with engine.begin() as connection:
         inspector = inspect(connection)
+        for table_name, column_name in (
+            ("tool_execution_policies", "receipt_contract"),
+            ("tool_invocations", "receipt_binding"),
+        ):
+            if table_name in inspector.get_table_names():
+                columns = {column["name"] for column in inspector.get_columns(table_name)}
+                if column_name not in columns:
+                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} JSON"))
+        if "tool_invocations" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("tool_invocations")}
+            for column, kind in (("encrypted_result", "TEXT"), ("result_expires_at", "DATETIME")):
+                if column not in columns:
+                    connection.execute(text(f"ALTER TABLE tool_invocations ADD COLUMN {column} {kind}"))
         if "projects" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("projects")}
             if "organization_id" not in columns:

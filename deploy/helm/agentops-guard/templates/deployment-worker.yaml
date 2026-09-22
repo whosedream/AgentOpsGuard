@@ -36,6 +36,13 @@ spec:
           env:
             - name: AGENTOPS_COMPONENT
               value: worker
+            {{- if .Values.invocationEncryption.existingSecret }}
+            - name: AGENTOPS_INVOCATION_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.invocationEncryption.existingSecret | quote }}
+                  key: {{ .Values.invocationEncryption.key | quote }}
+            {{- end }}
             - name: AGENTOPS_DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -46,9 +53,19 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.runtimeSecret.existingSecret | quote }}
                   key: {{ .Values.runtimeSecret.redisUrlKey | quote }}
+            - name: AGENTOPS_SEMANTIC_SCANNER_MODE
+              value: {{ .Values.semanticScanner.mode | quote }}
+            - name: AGENTOPS_SEMANTIC_SCANNER_THRESHOLD
+              value: {{ .Values.semanticScanner.threshold | quote }}
+            {{- if ne .Values.semanticScanner.mode "disabled" }}
+            - name: AGENTOPS_SEMANTIC_SERVICE_URL
+              value: "http://{{ include "agentops-guard.name" . }}-{{ ternary "gateway-proxy" "semantic-scanner" .Values.gatewayProxy.enabled }}:{{ .Values.service.semanticScannerPort }}"
+            - name: AGENTOPS_SEMANTIC_SERVICE_TIMEOUT_SECONDS
+              value: {{ .Values.semanticScanner.timeoutSeconds | quote }}
+            {{- end }}
             {{- if .Values.opa.enabled }}
             - name: AGENTOPS_OPA_URL
-              value: "http://{{ include "agentops-guard.name" . }}-opa:8181"
+              value: "http://{{ include "agentops-guard.name" . }}-{{ ternary "gateway-proxy" "opa" .Values.gatewayProxy.enabled }}:8181"
             - name: AGENTOPS_OPA_TIMEOUT_SECONDS
               value: {{ .Values.opa.timeoutSeconds | quote }}
             - name: AGENTOPS_POLICY_FAIL_MODE

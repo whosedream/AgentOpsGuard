@@ -203,12 +203,23 @@ class EvidenceSpan(BaseModel):
     snippet: str
 
 
+SemanticFailureReason = Literal[
+    "unavailable", "overloaded", "queue_timeout", "inference_failed", "warmup_failed",
+    "proxy_unavailable", "proxy_queue_timeout", "proxy_connection_failed",
+    "connection_failed", "connect_timeout", "read_timeout", "write_timeout", "pool_timeout",
+    "transport_error", "http_error", "invalid_response", "deadline_exceeded",
+]
+
+
 class SemanticAssessment(BaseModel):
     status: Literal["ok", "error"]
     mode: Literal["shadow", "enforce"]
     label: Literal["benign", "prompt_injection"] | None = None
     score: float | None = None
     model: str
+    error_reason: SemanticFailureReason | None = None
+    attempts: int = Field(default=1, ge=1, le=2)
+    attempt_errors: list[SemanticFailureReason] = Field(default_factory=list, max_length=2)
 
 
 class ScanResponse(BaseModel):

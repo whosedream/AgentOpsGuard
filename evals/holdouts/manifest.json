@@ -140,8 +140,58 @@
         "revision": "v0.16.0-3367d26374083aa794600b9c06b0b4f76faad76d-agent-threat-1-A"
       },
       "state": "consumed"
+    },
+    {
+      "corpusSha256": "034523eefaec18c291f9daa7699037acb0e7a91b1aeb1b205878b124f6e18f10",
+      "counts": {
+        "attack": 120,
+        "benign": 120
+      },
+      "custodianRef": "automated_source_lock",
+      "firstRun": {
+        "completedAt": "2026-09-05T07:07:33.967302Z",
+        "frozenSystemSha256": "e309126270e7a26dd7b4bfe583fce4783e9ec7fb99e9d93807cfba61229596b4",
+        "outcome": "succeeded",
+        "reportSha256": "1422377ca88fe7f3ebfca273b0a9795aa6e17dfda50ce958c3ad7d8338da10ec",
+        "runRef": "boundary_pairs_en_test_v1_first",
+        "startedAt": "2026-09-05T07:07:18.263505Z"
+      },
+      "frozenSystemSha256": "e309126270e7a26dd7b4bfe583fce4783e9ec7fb99e9d93807cfba61229596b4",
+      "id": "boundary_pairs_en_test_v1",
+      "role": "regression",
+      "source": {
+        "license": "CC-BY-4.0",
+        "name": "3nesdeniz/agentic-prompt-injection-boundary-pairs",
+        "revision": "a5682e7573e1c7bc4b12e64d49c0dcd90ca776cf"
+      },
+      "state": "consumed"
+    },
+    {
+      "corpusSha256": "c9edbcdf0fbcf8ac2247c776413b67b14dc7ee1fb9ae50d3b7ab3fcf434a4eec",
+      "counts": {
+        "attack": 40,
+        "benign": 40
+      },
+      "custodianRef": "self_authored_diagnostic",
+      "firstRun": {
+        "completedAt": "2026-09-05T07:07:45.243145Z",
+        "frozenSystemSha256": "e309126270e7a26dd7b4bfe583fce4783e9ec7fb99e9d93807cfba61229596b4",
+        "outcome": "succeeded",
+        "reportSha256": "1a8a427f7c6c8aed96fbfa9777c4f1c15041183214f23a6c81e57aebe9794a28",
+        "runRef": "chinese_boundary_diagnostic_v1_first",
+        "startedAt": "2026-09-05T07:07:33.971231Z"
+      },
+      "frozenSystemSha256": "e309126270e7a26dd7b4bfe583fce4783e9ec7fb99e9d93807cfba61229596b4",
+      "id": "chinese_boundary_diagnostic_v1",
+      "role": "regression",
+      "source": {
+        "license": "project-local-evaluation",
+        "name": "agentops-guard/chinese-boundary-diagnostic",
+        "revision": "v1"
+      },
+      "state": "consumed"
     }
   ],
-  "manifestRevision": 7,
+  "manifestRevision": 13,
   "schemaVersion": 1
 }

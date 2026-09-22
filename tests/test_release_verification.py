@@ -257,6 +257,8 @@ def test_release_checks_enforce_python_coverage_threshold():
     assert "agentdojo_static_blind_v1.json" in verification.BENCHMARK_ARTIFACTS
     assert "agentdojo_static_regression_v2.json" in verification.BENCHMARK_ARTIFACTS
     assert "agentdojo_static_regression_v3.json" in verification.BENCHMARK_ARTIFACTS
+    assert "agentdojo_static_regression_v4.json" in verification.BENCHMARK_ARTIFACTS
+    assert "boundary-quality-v1/boundary_pairs_en_test_v1.json" in verification.BENCHMARK_ARTIFACTS
     assert "bipia_protectai_candidate_regression_v1.json" in verification.BENCHMARK_ARTIFACTS
     assert "bipia_static_holdout_v1.json" in verification.BENCHMARK_ARTIFACTS
     assert "bipia_windowing_calibration_v1.json" in verification.BENCHMARK_ARTIFACTS
@@ -273,8 +275,14 @@ def test_release_checks_enforce_python_coverage_threshold():
     assert "agentdojo_template_dynamic_gateway_v8.json" in verification.EVALUATION_ARTIFACTS
     assert "agentdojo_template_dynamic_gateway_v9.json" in verification.EVALUATION_ARTIFACTS
     assert "agentdojo_template_dynamic_gateway_v10.json" in verification.EVALUATION_ARTIFACTS
+    assert "agentdojo_template_dynamic_gateway_v11.json" in verification.EVALUATION_ARTIFACTS
     assert "agent_threat_bench_gateway_v1.json" in verification.EVALUATION_ARTIFACTS
     assert "agent_threat_bench_gateway_v6.json" in verification.EVALUATION_ARTIFACTS
+    assert "agent_threat_bench_gateway_v7.json" in verification.EVALUATION_ARTIFACTS
+    assert verification.FAILED_ACCEPTANCE_GATES == (
+        "single_host_full_security_path_fault_soak",
+        "bilingual_attack_and_hard_negative_detection_quality",
+    )
     assert "qwen3_4b_q4_k_m_agent_smoke_v2.json" in verification.EVALUATION_ARTIFACTS
     assert len(verification.UNVERIFIED_GATES) == len(set(verification.UNVERIFIED_GATES)) == 10
 
@@ -395,6 +403,8 @@ def test_report_contains_provenance_limits_and_no_command_output(monkeypatch):
     report = verification.build_report(checks)
 
     assert report["result"] == "passed"
+    assert report["acceptance_result"] == "failed"
+    assert report["failed_acceptance_gates"] == list(verification.FAILED_ACCEPTANCE_GATES)
     assert report["privacy"] == {
         "captures_command_output": False,
         "captures_environment_values": False,

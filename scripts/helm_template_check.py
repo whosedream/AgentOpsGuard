@@ -500,15 +500,18 @@ def _validate_opa_signed_bundle(rendered: str) -> None:
         raise SystemExit("production OPA deployment is missing")
     pod_spec = deployment["spec"]["template"]["spec"]
     opa = next(container for container in pod_spec["containers"] if container["name"] == "opa")
-    args = set(opa.get("args") or [])
+    ordered_args = opa.get("args") or []
+    args = set(ordered_args)
     required_args = {
         "--disable-telemetry",
-        "--bundle=/policy/bundle.tar.gz",
+        "--bundle",
         "--verification-key=/policy/public.pem",
         "--verification-key-id=agentops-policy-v1",
         "--scope=agentops.guard",
     }
-    if not required_args.issubset(args):
+    bundle_position = ordered_args.index("--bundle") if "--bundle" in args else -1
+    if (not required_args.issubset(args) or bundle_position < 0
+            or ordered_args[bundle_position + 1:bundle_position + 2] != ["/policy/bundle.tar.gz"]):
         raise SystemExit("production OPA is missing signed bundle verification arguments")
     policy = next(volume for volume in pod_spec["volumes"] if volume["name"] == "policy")
     secret = policy.get("secret") or {}

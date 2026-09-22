@@ -256,6 +256,26 @@ spec:
         - protocol: TCP
           port: 8181
 {{- end }}
+{{- if ne .Values.semanticScanner.mode "disabled" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentops-guard.name" . }}-worker-scanner-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: agentops-guard-worker
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agentops-guard-semantic-scanner
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.semanticScannerPort }}
+{{- end }}
 {{- $workloads := dict "api" "agentops-guard-api" "gateway" "agentops-guard-gateway" "worker" "agentops-guard-worker" "outboxDispatcher" "agentops-guard-outbox-dispatcher" "auditAnchorExporter" "agentops-guard-audit-anchor-exporter" "migration" "agentops-guard-migration" -}}
 {{- range $name, $rules := .Values.networkPolicy.externalEgress }}
 {{- if $rules }}

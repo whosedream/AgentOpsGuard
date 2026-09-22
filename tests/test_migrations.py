@@ -99,7 +99,32 @@ def test_alembic_upgrade_from_identity_schema_creates_bound_credentials(
     }
     with engine.connect() as connection:
         version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert version == "0016_execution_reconciliation"
+    assert version == "0019_recovered_tool_results"
+    assert "receipt_contract" in {
+        column["name"] for column in inspector.get_columns("tool_execution_policies")
+    }
+    assert {"tool_invocations", "tool_execution_policies"} <= set(inspector.get_table_names())
+    assert {"encrypted_payload", "request_id", "lease_token", "receipt_binding",
+            "encrypted_result", "result_expires_at"} <= {
+        column["name"] for column in inspector.get_columns("tool_invocations")
+    }
+
+
+def test_existing_dev_bootstrap_adds_receipt_columns_without_granting_capability(tmp_path, monkeypatch):
+    from agentops_guard.backend import database
+
+    db_path = tmp_path / "old-dev.sqlite3"
+    _upgrade(db_path, "0017_tool_invocations")
+    engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+    monkeypatch.setattr(database, "engine", engine)
+    try:
+        database._apply_dev_bootstrap_fixes()
+        database._apply_dev_bootstrap_fixes()  # Existing dev bootstrap is repeatable.
+        for table, column in (("tool_execution_policies", "receipt_contract"),
+                              ("tool_invocations", "receipt_binding")):
+            assert column in {item["name"] for item in inspect(engine).get_columns(table)}
+    finally:
+        engine.dispose()
 
 
 def test_audit_chain_migration_seals_existing_history(tmp_path: Path):

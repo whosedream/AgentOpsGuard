@@ -53,7 +53,8 @@ spec:
             - --disable-telemetry
             - --addr=0.0.0.0:8181
             - --log-format=json
-            - --bundle=/policy/bundle.tar.gz
+            - --bundle
+            - /policy/bundle.tar.gz
             - --verification-key=/policy/public.pem
             - --verification-key-id={{ .Values.opa.bundle.verificationKeyId }}
             - --scope={{ .Values.opa.bundle.scope }}

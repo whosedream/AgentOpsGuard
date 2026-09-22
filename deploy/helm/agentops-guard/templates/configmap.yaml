@@ -6,6 +6,11 @@ metadata:
     {{- include "agentops-guard.labels" . | nindent 4 }}
 data:
   AGENTOPS_ENV: {{ .Values.env.AGENTOPS_ENV | quote }}
+  AGENTOPS_DATABASE_CONNECT_TIMEOUT_SECONDS: {{ .Values.databaseResilience.connectTimeoutSeconds | quote }}
+  AGENTOPS_DATABASE_POOL_TIMEOUT_SECONDS: {{ .Values.databaseResilience.poolTimeoutSeconds | quote }}
+  AGENTOPS_DATABASE_STATEMENT_TIMEOUT_MS: {{ .Values.databaseResilience.statementTimeoutMs | quote }}
+  AGENTOPS_DATABASE_LOCK_TIMEOUT_MS: {{ .Values.databaseResilience.lockTimeoutMs | quote }}
+  AGENTOPS_DATABASE_TCP_USER_TIMEOUT_MS: {{ .Values.databaseResilience.tcpUserTimeoutMs | quote }}
   AGENTOPS_SERVER_API_URL: {{ .Values.env.AGENTOPS_SERVER_API_URL | quote }}
   AGENTOPS_SERVER_GATEWAY_URL: {{ .Values.env.AGENTOPS_SERVER_GATEWAY_URL | quote }}
   AGENTOPS_MCP_PUBLIC_URL: {{ required "mcp.publicUrl is required" .Values.mcp.publicUrl | quote }}
@@ -13,7 +18,10 @@ data:
   AGENTOPS_MCP_ALLOWED_ORIGINS: {{ required "mcp.allowedOrigins is required" .Values.mcp.allowedOrigins | quote }}
   AGENTOPS_MCP_PAGE_SIZE: {{ .Values.mcp.pageSize | quote }}
   AGENTOPS_GATEWAY_CONCURRENCY_BACKEND: {{ .Values.gatewayConcurrency.backend | quote }}
+  AGENTOPS_GATEWAY_MAX_CONCURRENCY_PER_SERVER: {{ .Values.gatewayConcurrency.maxPerServer | quote }}
+  AGENTOPS_GATEWAY_CAPACITY_WAIT_SECONDS: {{ .Values.gatewayConcurrency.waitSeconds | quote }}
   AGENTOPS_GATEWAY_CONCURRENCY_LEASE_SECONDS: {{ .Values.gatewayConcurrency.leaseSeconds | quote }}
+  AGENTOPS_GATEWAY_CALL_TIMEOUT_SECONDS: {{ .Values.gatewayCallTimeoutSeconds | quote }}
   AGENTOPS_AUDIT_CHECKPOINT_BACKEND: {{ .Values.auditCheckpoints.backend | quote }}
   AGENTOPS_OPENBAO_TRANSIT_MOUNT: {{ .Values.auditCheckpoints.openbaoTransitMount | quote }}
   AGENTOPS_AUDIT_CHECKPOINT_KEY_NAME: {{ .Values.auditCheckpoints.keyName | quote }}

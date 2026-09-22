@@ -1,4 +1,7 @@
 from pathlib import Path
+import shutil
+import subprocess
+
 from runpy import run_path
 
 import pytest
@@ -78,6 +81,51 @@ def test_credential_encryption_key_is_mounted_only_into_the_api_deployment():
         "job-migration.yaml",
     ):
         assert marker not in (templates / name).read_text(encoding="utf-8")
+
+
+def test_invocation_key_is_separate_and_only_gateway_worker_receive_it():
+    templates = Path("deploy/helm/agentops-guard/templates")
+    marker = "AGENTOPS_INVOCATION_ENCRYPTION_KEY"
+    for path in templates.glob("*.yaml"):
+        if path.name in {"deployment-gateway.yaml", "deployment-worker.yaml"}:
+            assert marker in path.read_text()
+        else:
+            assert marker not in path.read_text()
+    policy = (templates / "networkpolicy-semantic-scanner.yaml").read_text()
+    assert "app: agentops-guard-worker" in policy
+    assert "-worker-scanner-egress" in (templates / "networkpolicy-default-deny.yaml").read_text()
+
+
+@pytest.mark.parametrize("mode", ["shadow", "disabled"])
+@pytest.mark.parametrize("proxy", [False, True])
+def test_rendered_worker_and_gateway_use_same_semantic_configuration(mode, proxy):
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("Helm is required for the rendered deployment test")
+    command = [helm, "template", "agentops-guard", "deploy/helm/agentops-guard",
+        "-f", "deploy/helm/agentops-guard/values.local-like.yaml",
+        "--set", "runtimeSecret.existingSecret=test-runtime",
+        "--set-string", "semanticScanner.modelSha256=" + "a" * 64,
+        "--set", "semanticScanner.existingClaim=test-model-volume",
+        "--set", f"semanticScanner.mode={mode}",
+        "--set", "semanticScanner.threshold=0.94",
+        "--set", f"gatewayProxy.enabled={str(proxy).lower()}"]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    documents = {doc["metadata"]["name"]: doc for doc in yaml.safe_load_all(result.stdout)
+                 if doc and doc["kind"] == "Deployment"}
+    environments = []
+    for name in ("agentops-guard-worker", "agentops-guard-gateway"):
+        env = documents[name]["spec"]["template"]["spec"]["containers"][0]["env"]
+        environments.append({item["name"]: item["value"] for item in env if item["name"].startswith("AGENTOPS_SEMANTIC_")})
+    assert environments[0] == environments[1]
+    assert environments[0]["AGENTOPS_SEMANTIC_SCANNER_MODE"] == mode
+    assert environments[0]["AGENTOPS_SEMANTIC_SCANNER_THRESHOLD"] == "0.94"
+    if mode == "disabled":
+        assert "AGENTOPS_SEMANTIC_SERVICE_URL" not in environments[0]
+    else:
+        target = "gateway-proxy" if proxy else "semantic-scanner"
+        assert target in environments[0]["AGENTOPS_SEMANTIC_SERVICE_URL"]
 
 
 def test_openbao_authentication_is_limited_to_api_and_read_only_exporter():
@@ -261,7 +309,8 @@ def test_opa_helm_is_optional_and_wires_policy_clients_when_enabled():
     assert ".Values.opa.enabled" in opa
     assert "--disable-telemetry" in opa
     assert "opa.bundle.enabled is required for production embedded OPA" in opa
-    assert "--bundle=/policy/bundle.tar.gz" in opa
+    assert "- --bundle\n            - /policy/bundle.tar.gz" in opa
+    assert "--bundle=/policy/bundle.tar.gz" not in opa
     assert "--verification-key=/policy/public.pem" in opa
     assert "opa.bundle.existingSecret" in opa
     assert "opa.bundle.expectedPolicyRevision is required" in opa
@@ -303,7 +352,7 @@ def test_helm_routes_standard_mcp_endpoint_to_gateway_with_explicit_guards():
     assert "AGENTOPS_MCP_ALLOWED_ORIGINS" in configmap
     assert "AGENTOPS_MCP_PAGE_SIZE" in configmap
     assert ".Values.mcp.ingressPath" in ingress
-    assert "-gateway" in ingress
+    assert 'ternary "gateway-proxy" "gateway"' in ingress
 
 
 def test_helm_requires_distributed_capacity_for_multiple_gateway_replicas():

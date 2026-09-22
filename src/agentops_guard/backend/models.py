@@ -245,6 +245,51 @@ class ExecutionRequest(Base):
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ToolExecutionPolicy(Base):
+    """Operator-reviewed capability; upstream annotations never grant retries."""
+
+    __tablename__ = "tool_execution_policies"
+    tool_id: Mapped[str] = mapped_column(String(384), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), index=True)
+    revision_digest: Mapped[str] = mapped_column(String(64))
+    queue_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    retry_mode: Mapped[str] = mapped_column(String(32), default="never")
+    evidence_sha256: Mapped[str] = mapped_column(String(64))
+    receipt_contract: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    updated_by: Mapped[str] = mapped_column(String(128))
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ToolInvocation(Base):
+    __tablename__ = "tool_invocations"
+    __table_args__ = (
+        UniqueConstraint("project_id", "actor_digest", "request_id", name="uq_tool_invocation_request"),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), index=True)
+    request_id: Mapped[str] = mapped_column(String(36))
+    actor_digest: Mapped[str] = mapped_column(String(64))
+    subject: Mapped[dict] = mapped_column(JSON, default=dict)
+    payload_digest: Mapped[str] = mapped_column(String(64))
+    tool_id: Mapped[str] = mapped_column(String(384))
+    revision_digest: Mapped[str | None] = mapped_column(String(64))
+    execution_policy_digest: Mapped[str | None] = mapped_column(String(64))
+    receipt_binding: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    mode: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    lease_token: Mapped[str | None] = mapped_column(String(36))
+    lease_expires_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[object] = mapped_column(DateTime(timezone=True))
+    encrypted_payload: Mapped[str | None] = mapped_column(Text)
+    encrypted_result: Mapped[str | None] = mapped_column(Text)
+    result_expires_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    job_id: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class PolicyPack(Base):
     __tablename__ = "policy_packs"
 

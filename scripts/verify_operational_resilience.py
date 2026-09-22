@@ -142,7 +142,7 @@ def _wait_for_redis(redis_url: str) -> None:
 
 def _remove_containers(container_names: tuple[str, ...]) -> None:
     subprocess.run(
-        ["docker", "rm", "--force", *container_names],
+        ["docker", "rm", "--force", "--volumes", *container_names],
         cwd=ROOT,
         env=_safe_environment(),
         stdin=subprocess.DEVNULL,

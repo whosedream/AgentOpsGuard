@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     oidc_max_token_bytes: int = Field(default=16_384, ge=1_024, le=65_536)
     oidc_max_token_lifetime_seconds: int = Field(default=900, ge=30, le=86_400)
     database_url: str = "sqlite:///./agentops_guard.sqlite3"
+    database_connect_timeout_seconds: int = Field(default=2, ge=2)
+    database_pool_timeout_seconds: float = Field(default=1.0, gt=0)
+    database_statement_timeout_ms: int = Field(default=3000, ge=1)
+    database_lock_timeout_ms: int = Field(default=1000, ge=1)
+    database_tcp_user_timeout_ms: int = Field(default=3000, ge=1)
     redis_url: str = "redis://localhost:6379/0"
     opa_url: str | None = None
     opa_timeout_seconds: float = Field(default=2.0, gt=0)
@@ -50,7 +55,7 @@ class Settings(BaseSettings):
     allow_schema_bootstrap: bool = False
     cors_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
     gateway_startup_timeout_seconds: float = 5.0
-    gateway_call_timeout_seconds: float = 10.0
+    gateway_call_timeout_seconds: float = Field(default=10.0, gt=0)
     gateway_max_response_bytes: int = 262_144
     gateway_max_stderr_bytes: int = 4_096
     gateway_max_concurrency_per_server: int = 1
@@ -74,6 +79,8 @@ class Settings(BaseSettings):
     semantic_service_timeout_seconds: float = Field(default=2.0, gt=0)
     credential_store: Literal["fernet", "openbao"] = "fernet"
     credential_encryption_key: SecretStr | None = None
+    # Separate from the API-only credential Vault key. Shared by gateway/worker only.
+    invocation_encryption_key: SecretStr | None = None
     openbao_url: str | None = None
     openbao_auth_method: Literal["token", "approle", "proxy"] = "token"
     openbao_token: SecretStr | None = None

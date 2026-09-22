@@ -255,7 +255,7 @@ def test_worker_stops_without_committing_when_heartbeat_loses_lease(monkeypatch)
     monkeypatch.setattr(jobs, "JOB_HEARTBEAT_SECONDS", 0.001)
     monkeypatch.setattr(jobs, "renew_background_job_lease", lambda *_args, **_kwargs: False)
 
-    def slow_payload(_db, _row):
+    def slow_payload(_db, _row, *, claimant):
         time.sleep(0.02)
         return {"should_not_commit": True}
 

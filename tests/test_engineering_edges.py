@@ -37,10 +37,16 @@ def test_legacy_http_transport_success_paths(monkeypatch):
 
     transport = LegacyHttpTransport("http://mcp.test")
     original_client = httpx.Client
+    original_async_client = httpx.AsyncClient
     monkeypatch.setattr(
         legacy_http.httpx,
         "Client",
         lambda **_kwargs: original_client(transport=httpx.MockTransport(handler)),
+    )
+    monkeypatch.setattr(
+        legacy_http.httpx,
+        "AsyncClient",
+        lambda **_kwargs: original_async_client(transport=httpx.MockTransport(handler)),
     )
 
     assert transport.list_tools() == [{"name": "http.echo"}]

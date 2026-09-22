@@ -49,8 +49,10 @@ REPEAT_REPORT = ROOT / "artifacts" / "evals" / "agentdojo_template_dynamic_gatew
 REPEAT_REPORT_SHA256 = "17a2d0ed85a18cdc3aeafdd8fdd500930760744eaf04bbda8d11c78bafd12d01"
 STABLE_REPORT = ROOT / "artifacts" / "evals" / "agentdojo_template_dynamic_gateway_v9.json"
 STABLE_REPORT_SHA256 = "c3937d99547afd1265b84b412fa10c49b7af07a652da146fe796a2fa3f15c07f"
-CURRENT_REPORT = ROOT / "artifacts" / "evals" / "agentdojo_template_dynamic_gateway_v10.json"
-CURRENT_REPORT_SHA256 = "c00fbf9045be803875956ec33f6e6c8d6d9398b23e468edcad56c4f442de15a7"
+BEFORE_INITIALIZATION_FIX_REPORT = ROOT / "artifacts" / "evals" / "agentdojo_template_dynamic_gateway_v10.json"
+BEFORE_INITIALIZATION_FIX_SHA256 = "c00fbf9045be803875956ec33f6e6c8d6d9398b23e468edcad56c4f442de15a7"
+CURRENT_REPORT = ROOT / "artifacts" / "evals" / "agentdojo_template_dynamic_gateway_v11.json"
+CURRENT_REPORT_SHA256 = "a8ea55b97073bd8ce94972232d0e3cdaafdddbe68c84cf2388c977d87a3b773e"
 CORPUS_SHA256 = "c63018476320b64f7d74deaf1bd91fb0728439483a646135e1014131417f8b1b"
 MODEL = Path("/home/hzj/models/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf")
 MODEL_SHA256 = "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5"
@@ -153,7 +155,7 @@ def _assert_common_boundaries(report: dict) -> None:
 def _assert_model(report: dict, distribution: dict) -> None:
     model_report = report["model"]
     if (
-        model_report["id"] != "Qwen3-4B-Q4_K_M"
+        model_report["id"] not in {"Qwen3-4B-Q4_K_M", "qwen3-4b-q4-k-m"}
         or model_report["artifact_sha256"] != MODEL_SHA256
         or model_report["artifact_size_bytes"] != MODEL_SIZE_BYTES
         or model_report["runtime_sha256"] != distribution["sha256"]
@@ -364,6 +366,9 @@ def main() -> int:
 
     if _sha256(CURRENT_REPORT) != CURRENT_REPORT_SHA256:
         raise RuntimeError("AgentDojo dynamic current report SHA-256 changed")
+    if _sha256(BEFORE_INITIALIZATION_FIX_REPORT) != BEFORE_INITIALIZATION_FIX_SHA256:
+        raise RuntimeError("AgentDojo pre-initialization-fix report SHA-256 changed")
+    _assert_current_results(json.loads(BEFORE_INITIALIZATION_FIX_REPORT.read_text(encoding="utf-8")))
     current = json.loads(CURRENT_REPORT.read_text(encoding="utf-8"))
     _assert_dataset(current)
     _assert_current_results(current)

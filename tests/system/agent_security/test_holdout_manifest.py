@@ -55,6 +55,8 @@ def test_repository_manifest_is_aggregate_only_and_known_sets_are_not_blind():
         "injecagent_static_v1",
         "nemotron_agentic_ipi_v1",
         "agent_threat_bench_dynamic_v1",
+        "boundary_pairs_en_test_v1",
+        "chinese_boundary_diagnostic_v1",
     }
     assert all(dataset["role"] == "regression" for dataset in manifest["datasets"])
     serialized = path.read_text(encoding="utf-8").lower()

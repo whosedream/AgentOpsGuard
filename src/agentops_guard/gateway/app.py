@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import asyncio
+from functools import partial
 import json
 from typing import Any
 
+import anyio
 import httpx
 from jsonschema.exceptions import SchemaError
 from jsonschema.validators import validator_for
@@ -18,7 +21,8 @@ from sqlalchemy.orm import Session
 from opentelemetry import trace
 
 from agentops_guard.backend.config import get_settings
-from agentops_guard.backend.database import get_db, init_db
+from agentops_guard.backend.database import engine, get_db, init_db
+from agentops_guard.backend.database_resilience import check_database_ready, database_http_boundary
 from agentops_guard.backend.models import (
     ApprovalRequest,
     ContentObject,
@@ -84,6 +88,7 @@ from agentops_guard.gateway.concurrency import (
 )
 from agentops_guard.gateway.protocol import create_standard_mcp_gateway
 from agentops_guard.gateway.transports import LegacyHttpTransport, StreamableHttpTransport
+from agentops_guard.gateway.transports.errors import UpstreamTransportError
 from agentops_guard.gateway.transports.stdio import (
     close_stdio_managers,
     get_stdio_manager,
@@ -188,6 +193,82 @@ def tools_call(
     payload: dict[str, Any],
     identity: GatewayIdentity = Depends(require_gateway_invoke),
     db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from agentops_guard.backend.services.tool_invocations import execute, public_status, register
+
+    row, created = register(db, payload, identity, queued=False)
+    if not created:
+        return {"isError": True, "content": [{"type": "text", "text": "invocation_already_recorded"}],
+                "invocation": public_status(row)}
+    return execute(db, row, payload, identity, _perform_tools_call)
+
+
+@router.post("/invocations", status_code=202)
+def enqueue_tool_invocation(
+    payload: dict[str, Any],
+    identity: GatewayIdentity = Depends(require_gateway_invoke),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from agentops_guard.backend.services.tool_invocations import public_status, register
+
+    if not payload.get("requestId"):
+        raise HTTPException(400, "Queued requests require a client-generated requestId UUID")
+    row, _created = register(db, payload, identity, queued=True)
+    return public_status(row)
+
+
+@router.get("/invocations/{request_id}")
+def get_tool_invocation(
+    request_id: str,
+    identity: GatewayIdentity = Depends(require_gateway_invoke),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from agentops_guard.backend.services.tool_invocations import lookup, public_status
+
+    return public_status(lookup(db, identity, request_id))
+
+
+@router.post("/invocations/{request_id}/resume", status_code=202)
+def resume_tool_invocation(
+    request_id: str,
+    identity: GatewayIdentity = Depends(require_gateway_invoke),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from agentops_guard.backend.services.tool_invocations import lookup, resume
+
+    return resume(db, lookup(db, identity, request_id))
+
+
+@router.get("/invocations/{request_id}/result")
+def get_invocation_result(
+    request_id: str,
+    identity: GatewayIdentity = Depends(require_gateway_invoke),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from agentops_guard.backend.services.tool_invocations import lookup
+    from agentops_guard.backend.services.tool_receipts import get_recovered_result
+
+    return get_recovered_result(db, lookup(db, identity, request_id))
+
+
+@router.post("/invocations/{request_id}/reconcile")
+def reconcile_tool_invocation(
+    request_id: str,
+    identity: GatewayIdentity = Depends(require_gateway_invoke),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from agentops_guard.backend.services.tool_invocations import lookup
+    from agentops_guard.backend.services.tool_receipts import reconcile_receipt
+
+    return reconcile_receipt(db, lookup(db, identity, request_id))
+
+
+def _perform_tools_call(
+    payload: dict[str, Any],
+    identity: GatewayIdentity = Depends(require_gateway_invoke),
+    db: Session = Depends(get_db),
+    *,
+    invocation_attempt=None,
 ) -> dict[str, Any]:
     project_id = identity.project_id
     tool_name = payload.get("name")
@@ -456,7 +537,7 @@ def tools_call(
             redis_url=settings.redis_url,
             lease_seconds=max(
                 settings.gateway_concurrency_lease_seconds,
-                max(settings.gateway_call_timeout_seconds, 30.0) + 10.0,
+                settings.gateway_call_timeout_seconds + 10.0,
             ),
         ):
             with trace.get_tracer("agentops_guard.gateway").start_as_current_span(
@@ -466,6 +547,8 @@ def tools_call(
                     "mcp.runtime_provider": server.runtime_provider,
                 },
             ) as upstream_span:
+                if invocation_attempt is not None:
+                    invocation_attempt.dispatch(db, revision.content_digest)
                 result = strip_untrusted_agentops_metadata(
                     _call_upstream_tool(server, tool_name, arguments)
                 )
@@ -485,42 +568,61 @@ def tools_call(
             release_execution_claim(db, execution_request)
             db.commit()
         raise HTTPException(503, "Gateway capacity coordination unavailable") from None
-    if execution_request is not None:
-        execution_request_id = execution_request.id
-        policy_decision_id = decision.id
-        try:
-            mark_execution_result(db, execution_request, result)
-        except ExecutionClaimConflict:
-            db.rollback()
+    # A received response and a successful gateway transaction are different facts.
+    # Never release unscanned output or replay the tool to recover persistence.
+    outcome_unknown = bool(result.get("upstreamError"))
+    with database_http_boundary(tool_execution={
+        "state": "outcome_unknown" if outcome_unknown else "response_received",
+        "tool_reported_error": None if outcome_unknown else bool(result.get("isError")),
+        "result_released": False,
+        "automatic_retry_allowed": False,
+    }):
+        if execution_request is not None:
+            execution_request_id = execution_request.id
+            policy_decision_id = decision.id
+            try:
+                mark_execution_result(db, execution_request, result)
+            except ExecutionClaimConflict:
+                db.rollback()
+                record_audit(
+                    db,
+                    project_id=project_id,
+                    action="execution.claim_lost",
+                    resource_type="execution_request",
+                    resource_id=execution_request_id,
+                    actor_type=identity.audit_actor_type,
+                    actor_id=identity.agent_id or identity.actor_id,
+                    after={"status": "claim_lost", "upstream_result_discarded": True},
+                    metadata={"policy_decision_id": policy_decision_id},
+                )
+                db.commit()
+                return _error_response(
+                    "execution_claim_lost",
+                    execution_request_id=execution_request_id,
+                )
+        upstream_is_error = bool(result.get("isError"))
+        if upstream_is_error:
             record_audit(
                 db,
                 project_id=project_id,
-                action="execution.claim_lost",
-                resource_type="execution_request",
-                resource_id=execution_request_id,
+                action="mcp_tool.upstream_error",
+                resource_type="mcp_tool",
+                resource_id=f"{server_id}:{tool_name}",
                 actor_type=identity.audit_actor_type,
                 actor_id=identity.agent_id or identity.actor_id,
-                after={"status": "claim_lost", "upstream_result_discarded": True},
-                metadata={"policy_decision_id": policy_decision_id},
+                after={"is_error": True},
+                metadata={"policy_decision_id": decision.id},
             )
-            db.commit()
-            return _error_response(
-                "execution_claim_lost",
-                execution_request_id=execution_request_id,
-            )
-    upstream_is_error = bool(result.get("isError"))
-    if upstream_is_error:
-        record_audit(
-            db,
-            project_id=project_id,
-            action="mcp_tool.upstream_error",
-            resource_type="mcp_tool",
-            resource_id=f"{server_id}:{tool_name}",
-            actor_type=identity.audit_actor_type,
-            actor_id=identity.agent_id or identity.actor_id,
-            after={"is_error": True},
-            metadata={"policy_decision_id": decision.id},
-        )
+        return scan_tool_result(db, identity, server, tool_name, run_id, revision, result, decision)
+
+
+def scan_tool_result(
+    db: Session, identity: GatewayIdentity, server: McpServer, tool_name: str,
+    run_id: str | None, revision: McpToolRevision, result: dict, decision: PolicyDecisionOut,
+    *, require_complete_scan: bool = False,
+) -> dict:
+    """Shared output boundary for live responses and recovered results; never calls a tool."""
+    project_id, server_id = identity.project_id, server.id
     text = _result_text(result)
     scan = scan_content(
         ScanRequest(
@@ -531,6 +633,8 @@ def tools_call(
         ),
         db,
     )
+    if require_complete_scan and scan.semantic_assessment is not None and scan.semantic_assessment.status != "ok":
+        raise HTTPException(503, "Recovered output scoring is incomplete")
     provenance = _content_provenance(
         db=db,
         project_id=project_id,
@@ -1155,19 +1259,39 @@ def create_gateway_app(config_path: str | None = None) -> FastAPI:
         return JSONResponse(status_code=422, content={"detail": "Invalid request"})
 
     @app.get("/healthz")
-    def healthz() -> dict[str, str]:
+    async def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
+    # Probes are independent I/O. Serializing them adds their latency and lets
+    # overlapping LB/kubelet checks form a queue behind a slow dependency.
+    # At most one round runs at a time, with one worker per dependency. A round
+    # already in progress may be shared, but a completed result is never cached.
+    readiness_limiters = [anyio.CapacityLimiter(1) for _ in range(3)]
+    readiness_task = None
+
+    async def check_dependencies():
+        return await asyncio.gather(*(
+            anyio.to_thread.run_sync(check, limiter=limiter)
+            for check, limiter in zip(
+                (partial(check_database_ready, engine), semantic_scanner_ready, check_opa_health),
+                readiness_limiters, strict=True)
+        ), return_exceptions=True)
+
     @app.get("/readyz")
-    def readyz() -> dict[str, str]:
-        try:
-            semantic_scanner_ready()
-        except SemanticScannerUnavailable as exc:
-            raise HTTPException(503, "Semantic scanner unavailable") from exc
-        try:
-            check_opa_health()
-        except OpaUnavailable as exc:
-            raise HTTPException(503, "OPA unavailable") from exc
+    async def readyz() -> dict[str, str]:
+        nonlocal readiness_task
+        if readiness_task is None or readiness_task.done():
+            readiness_task = asyncio.create_task(check_dependencies(), name="gateway-readiness")
+        # A disconnected probe waiter must not abandon its still-running DB or
+        # HTTP check and release capacity for an accumulating batch of probes.
+        results = await asyncio.shield(readiness_task)
+        for result in results:
+            if isinstance(result, SemanticScannerUnavailable):
+                raise HTTPException(503, "Semantic scanner unavailable") from result
+            if isinstance(result, OpaUnavailable):
+                raise HTTPException(503, "OPA unavailable") from result
+            if isinstance(result, BaseException):
+                raise result  # Includes real DB failures and programming errors.
         return {"status": "ready"}
 
     app.mount("/", protocol_app)
@@ -1445,15 +1569,19 @@ def _call_upstream_tool(
     if server.transport == "streamable_http" and server.url:
         try:
             return StreamableHttpTransport(
-                server.url, timeout=max(settings.gateway_call_timeout_seconds, 30.0)
+                server.url, timeout=settings.gateway_call_timeout_seconds
             ).call_tool(tool_name, arguments)
+        except UpstreamTransportError as exc:
+            return _error_response("upstream_http_error", upstream_error={"code": exc.code})
         except httpx.HTTPError:
             return _error_response("upstream_http_error", upstream_error={"code": "http_error"})
     if server.transport == "legacy_http" and server.url:
         try:
             return LegacyHttpTransport(
-                server.url, timeout=max(settings.gateway_call_timeout_seconds, 30.0)
+                server.url, timeout=settings.gateway_call_timeout_seconds
             ).call_tool(tool_name, arguments)
+        except UpstreamTransportError as exc:
+            return _error_response("upstream_http_error", upstream_error={"code": exc.code})
         except httpx.HTTPError:
             return _error_response("upstream_http_error", upstream_error={"code": "http_error"})
     if server.transport == "stdio" and server.command:

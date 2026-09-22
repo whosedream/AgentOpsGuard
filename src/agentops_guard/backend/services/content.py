@@ -7,7 +7,6 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from agentops_guard.backend.config import get_settings
-from agentops_guard.backend.models import ContentObject, Project
 from agentops_guard.backend.schemas import ContentIn
 
 SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -120,6 +119,10 @@ def merge_labels(*groups: Iterable[str]) -> list[str]:
 
 
 def persist_content(db: Session, project_id: str, content: ContentIn | None) -> str | None:
+    # Pure credential detection is also used by the independent admission API;
+    # importing it must not initialize the business database/configuration.
+    from agentops_guard.backend.models import ContentObject, Project
+
     if content is None or content.text is None:
         return None
     settings = get_settings()
